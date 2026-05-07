@@ -1,0 +1,50 @@
+---
+export const prerender = false;
+
+import BaseLayout from '../../layouts/BaseLayout.astro';
+
+const user = Astro.locals.user;
+const { slug } = Astro.params;
+const env = Astro.locals.runtime?.env;
+
+type Post = { id: string; title: string; content: string; category: string; created_at: number; username: string; avatar_url: string };
+
+let post: Post | null = null;
+if (env?.DB && slug) {
+	post = await env.DB.prepare(
+		`SELECT p.id, p.title, p.content, p.category, p.created_at, u.username, u.avatar_url
+		 FROM posts p JOIN users u ON p.author_id = u.id
+		 WHERE p.slug = ?`
+	).bind(slug).first<Post>();
+}
+
+if (!post) return Astro.redirect('/forum');
+---
+
+<BaseLayout title={`${post.title} — SolEngine`} user={user}>
+	<article class="post-article">
+		<div class="wrap">
+			<header class="post-header">
+				<p class="eyebrow">{post.category.toUpperCase()}</p>
+				<h1>{post.title}</h1>
+				<p class="meta">{post.username} · {new Date(post.created_at).toLocaleDateString()}</p>
+			</header>
+			<div class="post-content">
+				{post.content.split('\n').map((line) => line.trim() ? <p>{line}</p> : <br />)}
+			</div>
+			<a href="/forum" class="back">← BACK TO FORUM</a>
+		</div>
+	</article>
+</BaseLayout>
+
+<style>
+	.post-article { padding: 4rem 0 6rem; }
+	.wrap { max-width: 720px; margin: 0 auto; padding: 0 2rem; }
+	.eyebrow { font-size: 0.68rem; letter-spacing: 0.14em; color: var(--muted); text-transform: uppercase; margin-bottom: 0.5rem; }
+	h1 { font-size: 2rem; font-weight: 700; letter-spacing: -0.02em; line-height: 1.2; }
+	.meta { margin-top: 0.5rem; font-size: 0.78rem; color: var(--muted); }
+	.post-content { margin-top: 2.5rem; padding-top: 2.5rem; border-top: 1px solid var(--border); }
+	.post-content p { color: var(--text); line-height: 1.75; margin-bottom: 1rem; font-size: 0.95rem; }
+	.back { display: inline-block; margin-top: 3rem; font-size: 0.72rem; letter-spacing: 0.1em; color: var(--muted); transition: color 0.15s; }
+	.back:hover { color: var(--text); }
+</style>

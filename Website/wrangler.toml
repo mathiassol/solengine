@@ -1,3 +1,8 @@
 name = "solengine-website"
 compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
 pages_build_output_dir = "dist"
+
+# Bindings are configured in the Cloudflare Pages dashboard for production.
+# For local dev with wrangler, create a .dev.vars file with GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET
+# and run: wrangler d1 create solengine-forum  |  wrangler kv namespace create SESSION_STORE

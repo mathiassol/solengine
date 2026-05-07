@@ -2,11 +2,13 @@
 export interface Props {
 	title?: string;
 	description?: string;
+	user?: { username: string; avatarUrl: string } | null;
 }
 
 const {
 	title = 'SolEngine',
 	description = 'A high-performance engine for modern applications.',
+	user = null,
 } = Astro.props;
 ---
 
@@ -42,7 +44,16 @@ const {
 			<a href="/" class="wordmark">SOLENGINE</a>
 			<nav>
 				<a href="/docs/">Docs</a>
+				<a href="/forum">Forum</a>
 				<a href="/download" class="nav-dl">Download</a>
+				{user ? (
+					<span class="user-row">
+						<span class="username">{user.username}</span>
+						<form method="POST" action="/api/auth/logout">
+							<button type="submit" class="logout-btn">Sign out</button>
+						</form>
+					</span>
+				) : null}
 			</nav>
 		</div>
 	</header>
@@ -76,6 +87,13 @@ const {
 	nav a { color: var(--muted); transition: color 0.15s; }
 	nav a:hover { color: var(--text); }
 	.nav-dl { color: var(--accent) !important; }
+	.user-row { display: flex; align-items: center; gap: 1rem; }
+	.username { color: var(--text); }
+	.logout-btn {
+		background: none; border: none; color: var(--muted); font-size: 0.78rem;
+		letter-spacing: 0.06em; cursor: pointer; transition: color 0.15s; padding: 0;
+	}
+	.logout-btn:hover { color: var(--text); }
 	.footer {
 		margin-top: auto; border-top: 1px solid var(--border);
 	}

@@ -1,0 +1,93 @@
+---
+export const prerender = false;
+
+import BaseLayout from '../../layouts/BaseLayout.astro';
+
+const user = Astro.locals.user;
+if (!user) return Astro.redirect('/api/auth/login');
+---
+
+<BaseLayout title="New Post — SolEngine" user={user}>
+	<section class="hero">
+		<div class="wrap">
+			<p class="eyebrow">FORUM</p>
+			<h1>New Post</h1>
+		</div>
+	</section>
+
+	<section class="form-section">
+		<div class="wrap">
+			<form id="post-form">
+				<div class="field">
+					<label for="title">TITLE</label>
+					<input id="title" name="title" type="text" required maxlength="120" />
+				</div>
+				<div class="field">
+					<label for="category">CATEGORY</label>
+					<select id="category" name="category">
+						<option value="general">GENERAL</option>
+						<option value="engine">ENGINE</option>
+						<option value="games">GAMES</option>
+					</select>
+				</div>
+				<div class="field">
+					<label for="content">CONTENT</label>
+					<textarea id="content" name="content" required rows="14"></textarea>
+				</div>
+				<p id="error" class="error" hidden></p>
+				<button type="submit" class="submit-btn">PUBLISH</button>
+			</form>
+		</div>
+	</section>
+</BaseLayout>
+
+<script>
+	const form = document.getElementById('post-form') as HTMLFormElement;
+	const errorEl = document.getElementById('error') as HTMLParagraphElement;
+
+	form.addEventListener('submit', async (e) => {
+		e.preventDefault();
+		errorEl.hidden = true;
+		const data = Object.fromEntries(new FormData(form));
+		const res = await fetch('/api/posts/create', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(data),
+		});
+		if (res.ok) {
+			const { slug } = await res.json();
+			window.location.href = `/forum/${slug}`;
+		} else {
+			const text = await res.text();
+			errorEl.textContent = text;
+			errorEl.hidden = false;
+		}
+	});
+</script>
+
+<style>
+	.hero { padding: 4rem 0 2rem; border-bottom: 1px solid var(--border); }
+	.wrap { max-width: 700px; margin: 0 auto; padding: 0 2rem; }
+	.eyebrow { font-size: 0.7rem; letter-spacing: 0.14em; color: var(--muted); text-transform: uppercase; margin-bottom: 0.5rem; }
+	h1 { font-size: 2rem; font-weight: 700; letter-spacing: -0.02em; }
+
+	.form-section { padding: 3rem 0 5rem; }
+	form { display: flex; flex-direction: column; gap: 1.5rem; }
+	.field { display: flex; flex-direction: column; gap: 0.4rem; }
+	label { font-size: 0.68rem; letter-spacing: 0.12em; color: var(--muted); }
+	input, select, textarea {
+		background: var(--surface); border: 1px solid var(--border); color: var(--text);
+		padding: 0.6rem 0.75rem; font-size: 0.9rem; font-family: inherit;
+		outline: none; resize: vertical; transition: border-color 0.15s;
+	}
+	input:focus, select:focus, textarea:focus { border-color: var(--text); }
+	select option { background: var(--surface); }
+	.error { color: #c0392b; font-size: 0.8rem; }
+	.submit-btn {
+		align-self: flex-start; padding: 0.6rem 1.5rem;
+		background: var(--accent); color: var(--bg); border: none;
+		font-size: 0.72rem; font-weight: 700; letter-spacing: 0.1em; cursor: pointer;
+		transition: opacity 0.15s;
+	}
+	.submit-btn:hover { opacity: 0.85; }
+</style>

@@ -1,0 +1,108 @@
+---
+export const prerender = false;
+
+import BaseLayout from '../../layouts/BaseLayout.astro';
+
+const user = Astro.locals.user;
+const env = Astro.locals.runtime?.env;
+
+type Post = { id: string; title: string; category: string; slug: string; created_at: number; username: string };
+
+let posts: Post[] = [];
+let category = Astro.url.searchParams.get('category') ?? 'all';
+const validCategories = ['all', 'engine', 'games', 'general'];
+if (!validCategories.includes(category)) category = 'all';
+
+if (env?.DB) {
+	const query = category === 'all'
+		? `SELECT p.id, p.title, p.category, p.slug, p.created_at, u.username
+		   FROM posts p JOIN users u ON p.author_id = u.id
+		   ORDER BY p.created_at DESC LIMIT 50`
+		: `SELECT p.id, p.title, p.category, p.slug, p.created_at, u.username
+		   FROM posts p JOIN users u ON p.author_id = u.id
+		   WHERE p.category = ?
+		   ORDER BY p.created_at DESC LIMIT 50`;
+	const result = category === 'all'
+		? await env.DB.prepare(query).all<Post>()
+		: await env.DB.prepare(query).bind(category).all<Post>();
+	posts = result.results ?? [];
+}
+---
+
+<BaseLayout title="Forum — SolEngine" user={user}>
+	<section class="hero">
+		<div class="wrap">
+			<p class="eyebrow">COMMUNITY</p>
+			<h1>Forum</h1>
+			<p class="sub">Discuss SolEngine builds, share games, ask questions.</p>
+		</div>
+	</section>
+
+	<section class="forum-body">
+		<div class="wrap">
+			<div class="top-bar">
+				<nav class="cats">
+					{['all', 'engine', 'games', 'general'].map((c) => (
+						<a href={`/forum?category=${c}`} class={`cat ${category === c ? 'active' : ''}`}>
+							{c.toUpperCase()}
+						</a>
+					))}
+				</nav>
+				{user
+					? <a href="/forum/new" class="btn-new">NEW POST</a>
+					: <a href="/api/auth/login" class="btn-login">SIGN IN WITH GITHUB</a>
+				}
+			</div>
+
+			{posts.length === 0
+				? <p class="empty">No posts yet. Be the first.</p>
+				: <ul class="post-list">
+					{posts.map((p) => (
+						<li>
+							<a href={`/forum/${p.slug}`} class="post-row">
+								<span class="post-cat">{p.category.toUpperCase()}</span>
+								<span class="post-title">{p.title}</span>
+								<span class="post-meta">{p.username} · {new Date(p.created_at).toLocaleDateString()}</span>
+							</a>
+						</li>
+					))}
+				  </ul>
+			}
+		</div>
+	</section>
+</BaseLayout>
+
+<style>
+	.hero { padding: 4rem 0 2rem; border-bottom: 1px solid var(--border); }
+	.wrap { max-width: 900px; margin: 0 auto; padding: 0 2rem; }
+	.eyebrow { font-size: 0.7rem; letter-spacing: 0.14em; color: var(--muted); text-transform: uppercase; margin-bottom: 0.5rem; }
+	h1 { font-size: 2rem; font-weight: 700; letter-spacing: -0.02em; }
+	.sub { margin-top: 0.5rem; color: var(--muted); font-size: 0.9rem; }
+
+	.forum-body { padding: 2rem 0 4rem; }
+	.top-bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 2rem; }
+	.cats { display: flex; gap: 1rem; }
+	.cat { font-size: 0.72rem; letter-spacing: 0.1em; color: var(--muted); padding-bottom: 2px; border-bottom: 1px solid transparent; transition: color 0.15s; }
+	.cat:hover { color: var(--text); }
+	.cat.active { color: var(--text); border-bottom-color: var(--text); }
+	.btn-new, .btn-login {
+		font-size: 0.72rem; letter-spacing: 0.1em; padding: 0.45rem 1rem;
+		border: 1px solid var(--border); color: var(--text); transition: border-color 0.15s;
+	}
+	.btn-new { border-color: var(--accent); color: var(--accent); }
+	.btn-new:hover { background: var(--accent); color: var(--bg); }
+	.btn-login:hover { border-color: var(--text); }
+
+	.empty { color: var(--muted); font-size: 0.9rem; padding: 2rem 0; }
+	.post-list { list-style: none; border-top: 1px solid var(--border); }
+	.post-list li { border-bottom: 1px solid var(--border); }
+	.post-row {
+		display: grid; grid-template-columns: 6rem 1fr auto;
+		align-items: center; gap: 1.5rem; padding: 1rem 0.5rem;
+		transition: background 0.1s;
+	}
+	.post-row:hover { background: var(--surface); }
+	.post-cat { font-size: 0.65rem; letter-spacing: 0.1em; color: var(--muted); }
+	.post-title { font-size: 0.9rem; }
+	.post-meta { font-size: 0.72rem; color: var(--muted); white-space: nowrap; }
+</style>
