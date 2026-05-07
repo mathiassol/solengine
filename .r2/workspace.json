@@ -1,5 +1,5 @@
 {
-  "activeTabIndex": 8,
+  "activeTabIndex": 7,
   "tabs": [
     {
       "appId": "editor",
@@ -47,12 +47,6 @@
       "appId": "editor",
       "context": {
         "filePath": "C:\\Users\\mathi\\Desktop\\SolEngine\\Website\\src\\pages\\yourpage.astro"
-      }
-    },
-    {
-      "appId": "editor",
-      "context": {
-        "filePath": "C:\\Users\\mathi\\Desktop\\SolEngine\\engine\\src\\engine.cpp"
       }
     }
   ]
