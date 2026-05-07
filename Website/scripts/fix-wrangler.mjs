@@ -63,8 +63,9 @@ for (const path of files) {
 		delete cfg.dev.generate_types;
 	}
 
-	// Fix pages_build_output_dir — must be relative, not absolute local path
-	cfg.pages_build_output_dir = 'dist';
+	// Fix pages_build_output_dir — remove from generated config (absolute local path is wrong on CI)
+	// The original wrangler.toml already declares the correct value; Pages uses that.
+	delete cfg.pages_build_output_dir;
 
 	writeFileSync(path, JSON.stringify(cfg, null, 2));
 	console.log(`Patched ${path}`);
