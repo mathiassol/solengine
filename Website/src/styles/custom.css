@@ -1,0 +1,30 @@
+/* Override Starlight to match SolEngine design language */
+:root,
+[data-theme='dark'] {
+	--sl-color-bg:             #0d0d0d;
+	--sl-color-bg-nav:         #0d0d0d;
+	--sl-color-bg-sidebar:     #0d0d0d;
+	--sl-color-bg-inline-code: #111111;
+	--sl-color-hairline:       #262626;
+	--sl-color-hairline-light: #1e1e1e;
+	--sl-color-text:           #e8e8e8;
+	--sl-color-text-accent:    #d4a840;
+	--sl-color-gray-1:         #e8e8e8;
+	--sl-color-gray-2:         #b0b0b0;
+	--sl-color-gray-3:         #888888;
+	--sl-color-gray-4:         #444444;
+	--sl-color-gray-5:         #262626;
+	--sl-color-gray-6:         #111111;
+	--sl-color-accent-low:     #1e1608;
+	--sl-color-accent:         #d4a840;
+	--sl-color-accent-high:    #f0dea0;
+	--sl-border-radius:        0;
+	--sl-border-radius-sm:     0;
+	--sl-border-radius-lg:     0;
+}
+
+/* Hard-cut everything */
+* { border-radius: 0 !important; }
+
+/* Sidebar top border */
+.sidebar-pane { border-right: 1px solid #262626; }

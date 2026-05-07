@@ -1,0 +1,156 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+
+const REPO = 'mathiassol/solengine';
+---
+
+<BaseLayout
+	title="Download — SolEngine"
+	description="Download the latest release of SolEngine."
+>
+	<section class="page-header">
+		<div class="wrap">
+			<p class="eyebrow">RELEASE</p>
+			<h1>Download</h1>
+		</div>
+	</section>
+
+	<section class="content">
+		<div class="wrap">
+			<p id="loading" class="status">Loading release data…</p>
+
+			<p id="error" class="status" style="display:none">
+				Failed to load release. <a href={`https://github.com/${REPO}/releases`}>View on GitHub &rarr;</a>
+			</p>
+
+			<div id="content" style="display:none">
+				<div class="release-meta">
+					<span id="tag" class="tag"></span>
+					<span id="name" class="release-name"></span>
+					<span id="date" class="release-date"></span>
+					<a href={`https://github.com/${REPO}/releases`} class="all-link">All releases &rarr;</a>
+				</div>
+
+				<div id="notes" class="notes"></div>
+
+				<p class="eyebrow">ASSETS</p>
+				<div id="assets" class="asset-list"></div>
+			</div>
+		</div>
+	</section>
+</BaseLayout>
+
+<script define:vars={{ REPO }}>
+	async function load() {
+		const loading = document.getElementById('loading');
+		const error   = document.getElementById('error');
+		const content = document.getElementById('content');
+
+		try {
+			const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`);
+			if (!res.ok) throw new Error();
+			const data = await res.json();
+
+			document.getElementById('tag').textContent  = data.tag_name;
+			document.getElementById('name').textContent = data.name || '';
+			document.getElementById('date').textContent =
+				new Date(data.published_at).toLocaleDateString('en-US', {
+					year: 'numeric', month: 'long', day: 'numeric',
+				});
+
+			const notesEl = document.getElementById('notes');
+			if (data.body?.trim()) {
+				notesEl.innerHTML = data.body
+					.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+					.replace(/^### (.+)$/gm, '<h4>$1</h4>')
+					.replace(/^## (.+)$/gm,  '<h3>$1</h3>')
+					.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+					.replace(/`(.+?)`/g, '<code>$1</code>')
+					.replace(/^- (.+)$/gm, '<li>$1</li>')
+					.replace(/\n/g, '<br>');
+			} else {
+				notesEl.style.display = 'none';
+			}
+
+			const assetsEl = document.getElementById('assets');
+			if (data.assets?.length) {
+				assetsEl.innerHTML = data.assets.map((a) => `
+					<a class="asset-row" href="${a.browser_download_url}" download>
+						<span class="asset-platform">${platform(a.name)}</span>
+						<span class="asset-name">${a.name}</span>
+						<span class="asset-size">${bytes(a.size)}</span>
+						<span class="asset-dl">&#8595;</span>
+					</a>
+				`).join('');
+			} else {
+				assetsEl.innerHTML = '<p class="empty">No assets attached to this release yet.</p>';
+			}
+
+			loading.style.display = 'none';
+			content.style.display = 'block';
+		} catch {
+			loading.style.display = 'none';
+			error.style.display   = 'block';
+		}
+	}
+
+	function platform(name) {
+		if (/windows|win|\.exe$/i.test(name)) return 'WIN';
+		if (/macos|darwin|mac|\.dmg$/i.test(name)) return 'MAC';
+		if (/linux|\.deb$|\.rpm$|\.tar\.gz$/i.test(name)) return 'LNX';
+		return 'BIN';
+	}
+
+	function bytes(n) {
+		if (n < 1024) return n + ' B';
+		if (n < 1024 ** 2) return (n / 1024).toFixed(1) + ' KB';
+		return (n / 1024 ** 2).toFixed(1) + ' MB';
+	}
+
+	load();
+</script>
+
+<style>
+	.wrap { max-width: 860px; margin: 0 auto; padding: 0 2rem; }
+	.eyebrow { font-size: 0.7rem; letter-spacing: 0.16em; color: var(--muted); margin-bottom: 1rem; }
+
+	.page-header { padding: 5rem 0 3rem; border-bottom: 1px solid var(--border); }
+	h1 { font-size: 2.5rem; font-weight: 700; letter-spacing: -0.02em; }
+
+	.content { padding: 3rem 0 6rem; }
+
+	.status { color: var(--muted); font-size: 0.875rem; }
+	.status a { color: var(--text); text-decoration: underline; }
+
+	.release-meta {
+		display: flex; align-items: baseline; gap: 1.25rem; flex-wrap: wrap;
+		padding-bottom: 1.5rem; border-bottom: 1px solid var(--border); margin-bottom: 2rem;
+	}
+	.tag { font-size: 0.72rem; letter-spacing: 0.1em; font-weight: 700; color: var(--accent); }
+	.release-name { font-size: 0.875rem; font-weight: 600; }
+	.release-date { font-size: 0.78rem; color: var(--muted); }
+	.all-link { margin-left: auto; font-size: 0.78rem; color: var(--muted); transition: color 0.15s; }
+	.all-link:hover { color: var(--text); }
+
+	.notes {
+		border: 1px solid var(--border); padding: 1.5rem; margin-bottom: 2rem;
+		font-size: 0.875rem; line-height: 1.8; color: var(--muted);
+	}
+	.notes h3, .notes h4 { color: var(--text); margin: 1rem 0 0.3rem; font-size: 0.875rem; font-weight: 600; }
+	.notes code { font-family: monospace; background: var(--surface); padding: 0.1rem 0.3rem; font-size: 0.8em; }
+
+	.asset-list { border-top: 1px solid var(--border); margin-top: 0.75rem; }
+	.asset-row {
+		display: grid; grid-template-columns: 2.5rem 1fr auto auto;
+		align-items: center; gap: 1rem;
+		padding: 0.85rem 0; border-bottom: 1px solid var(--border);
+		transition: background 0.1s;
+	}
+	.asset-row:hover { background: var(--surface); padding-left: 0.5rem; padding-right: 0.5rem; margin: 0 -0.5rem; }
+	.asset-platform { font-size: 0.62rem; letter-spacing: 0.1em; font-weight: 700; color: var(--muted); font-family: monospace; }
+	.asset-name { font-size: 0.875rem; font-family: monospace; }
+	.asset-size { font-size: 0.78rem; color: var(--muted); }
+	.asset-dl { color: var(--muted); font-size: 0.9rem; transition: color 0.15s; }
+	.asset-row:hover .asset-dl { color: var(--text); }
+	.empty { color: var(--muted); font-size: 0.875rem; padding: 1rem 0; }
+</style>

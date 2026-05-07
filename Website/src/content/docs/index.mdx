@@ -1,0 +1,30 @@
+---
+title: SolEngine Docs
+description: Welcome to the SolEngine documentation.
+template: splash
+hero:
+  tagline: Everything you need to build with SolEngine.
+  actions:
+    - text: Get Started
+      link: /docs/getting-started/
+      icon: right-arrow
+    - text: Download
+      link: /download
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid>
+	<Card title="Getting Started" icon="rocket">
+		New to SolEngine? [Start here](/docs/getting-started/) and be up and running quickly.
+	</Card>
+	<Card title="Download" icon="laptop">
+		Grab the latest release from the [Download](/download) page.
+	</Card>
+	<Card title="GitHub" icon="github">
+		Browse source, open issues, and contribute on [GitHub](https://github.com/mathiassol/solengine).
+	</Card>
+</CardGrid>
+

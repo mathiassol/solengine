@@ -1,0 +1,104 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+---
+
+<BaseLayout
+	title="SolEngine — Fast. Minimal. Powerful."
+	description="A high-performance engine for modern applications."
+>
+	<section class="hero">
+		<div class="wrap">
+			<p class="eyebrow">ENGINE</p>
+			<h1>High-performance.<br />Zero overhead.</h1>
+			<p class="sub">SolEngine is a minimal, modular engine for modern workflows. No bloat. Full control.</p>
+			<div class="actions">
+				<a href="/download" class="btn-primary">Download</a>
+				<a href="/docs/" class="btn-ghost">Documentation &rarr;</a>
+			</div>
+		</div>
+	</section>
+
+	<section class="features">
+		<div class="wrap">
+			<p class="eyebrow">FEATURES</p>
+			<div class="grid">
+				<div class="cell">
+					<h3>Performance</h3>
+					<p>Optimized core with minimal allocations and maximum throughput.</p>
+				</div>
+				<div class="cell">
+					<h3>Modular</h3>
+					<p>Use only the components you need. Nothing extra is loaded.</p>
+				</div>
+				<div class="cell">
+					<h3>Cross-platform</h3>
+					<p>Consistent behavior across Windows, macOS, and Linux.</p>
+				</div>
+				<div class="cell">
+					<h3>Self-contained</h3>
+					<p>Zero runtime dependencies. One binary, no installer required.</p>
+				</div>
+			</div>
+		</div>
+	</section>
+
+	<section class="cta">
+		<div class="wrap">
+			<h2>Get started.</h2>
+			<div class="actions">
+				<a href="/docs/getting-started" class="btn-primary">Documentation</a>
+				<a href="https://github.com/mathiassol/solengine" class="btn-ghost">GitHub &rarr;</a>
+			</div>
+		</div>
+	</section>
+</BaseLayout>
+
+<style>
+	.wrap { max-width: 1100px; margin: 0 auto; padding: 0 2rem; }
+	.eyebrow { font-size: 0.7rem; letter-spacing: 0.16em; color: var(--muted); margin-bottom: 1.5rem; }
+
+	/* Hero */
+	.hero { padding: 7rem 0 6rem; border-bottom: 1px solid var(--border); }
+	h1 {
+		font-size: clamp(2.4rem, 6vw, 4.5rem);
+		font-weight: 700; line-height: 1.08; letter-spacing: -0.025em;
+		margin-bottom: 1.5rem;
+	}
+	.sub {
+		font-size: 1rem; color: var(--muted); max-width: 420px;
+		line-height: 1.7; margin-bottom: 2.5rem;
+	}
+	.actions { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+	.btn-primary {
+		background: var(--accent); color: #000;
+		padding: 0.6rem 1.5rem; font-size: 0.8rem; font-weight: 600; letter-spacing: 0.06em;
+		transition: opacity 0.15s;
+	}
+	.btn-primary:hover { opacity: 0.85; }
+	.btn-ghost {
+		color: var(--muted); padding: 0.6rem 1.5rem; font-size: 0.8rem;
+		border: 1px solid var(--border); letter-spacing: 0.04em;
+		transition: color 0.15s, border-color 0.15s;
+	}
+	.btn-ghost:hover { color: var(--text); border-color: var(--muted); }
+
+	/* Features */
+	.features { padding: 5rem 0; border-bottom: 1px solid var(--border); }
+	.grid {
+		display: grid; grid-template-columns: 1fr 1fr;
+		border-top: 1px solid var(--border);
+		border-left: 1px solid var(--border);
+	}
+	.cell {
+		border-right: 1px solid var(--border);
+		border-bottom: 1px solid var(--border);
+		padding: 2.5rem 2rem;
+	}
+	.cell h3 { font-size: 0.85rem; font-weight: 600; letter-spacing: 0.04em; margin-bottom: 0.75rem; }
+	.cell p { font-size: 0.85rem; color: var(--muted); line-height: 1.7; }
+	@media (max-width: 560px) { .grid { grid-template-columns: 1fr; } }
+
+	/* CTA */
+	.cta { padding: 5rem 0; }
+	.cta h2 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 2rem; }
+</style>

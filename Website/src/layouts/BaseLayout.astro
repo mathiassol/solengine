@@ -1,0 +1,88 @@
+---
+export interface Props {
+	title?: string;
+	description?: string;
+}
+
+const {
+	title = 'SolEngine',
+	description = 'A high-performance engine for modern applications.',
+} = Astro.props;
+---
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+	<meta name="description" content={description} />
+	<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+	<title>{title}</title>
+	<style is:global>
+		*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; border-radius: 0; }
+		:root {
+			--bg:      #0d0d0d;
+			--surface: #111111;
+			--border:  #262626;
+			--text:    #e8e8e8;
+			--muted:   #666666;
+			--accent:  #d4a840;
+		}
+		html {
+			font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+			background: var(--bg); color: var(--text); scroll-behavior: smooth;
+		}
+		body { min-height: 100vh; display: flex; flex-direction: column; }
+		a { color: inherit; text-decoration: none; }
+	</style>
+</head>
+<body>
+	<header class="nav">
+		<div class="wrap">
+			<a href="/" class="wordmark">SOLENGINE</a>
+			<nav>
+				<a href="/docs/">Docs</a>
+				<a href="/download" class="nav-dl">Download</a>
+			</nav>
+		</div>
+	</header>
+
+	<main><slot /></main>
+
+	<footer class="footer">
+		<div class="wrap">
+			<span>SOLENGINE &copy; {new Date().getFullYear()}</span>
+			<a href="https://github.com/mathiassol/solengine">GitHub</a>
+		</div>
+	</footer>
+</body>
+</html>
+
+<style>
+	.wrap {
+		max-width: 1100px; margin: 0 auto; padding: 0 2rem;
+	}
+	.nav {
+		position: sticky; top: 0; z-index: 100;
+		background: var(--bg); border-bottom: 1px solid var(--border);
+	}
+	.nav .wrap {
+		height: 52px; display: flex; align-items: center; justify-content: space-between;
+	}
+	.wordmark {
+		font-size: 0.75rem; font-weight: 700; letter-spacing: 0.14em; color: var(--text);
+	}
+	nav { display: flex; align-items: center; gap: 2rem; font-size: 0.78rem; letter-spacing: 0.06em; }
+	nav a { color: var(--muted); transition: color 0.15s; }
+	nav a:hover { color: var(--text); }
+	.nav-dl { color: var(--accent) !important; }
+	.footer {
+		margin-top: auto; border-top: 1px solid var(--border);
+	}
+	.footer .wrap {
+		height: 48px; display: flex; align-items: center; justify-content: space-between;
+		font-size: 0.72rem; letter-spacing: 0.08em; color: var(--muted);
+	}
+	.footer a { color: var(--muted); transition: color 0.15s; }
+	.footer a:hover { color: var(--text); }
+</style>
