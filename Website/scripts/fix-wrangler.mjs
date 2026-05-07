@@ -6,6 +6,16 @@ const files = [
 	'dist/server/.prerender/wrangler.json',
 ];
 
+// Fields only valid for Workers, not Pages
+const WORKER_ONLY_FIELDS = [
+	'main', 'rules', 'no_bundle', 'build', 'assets',
+	'previews', 'jsx_factory', 'jsx_fragment', 'migrations',
+	'topLevelName', 'definedEnvironments',
+	'ai_search_namespaces', 'ai_search', 'secrets_store_secrets',
+	'artifacts', 'unsafe_hello_world', 'flagship', 'worker_loaders',
+	'ratelimits', 'vpc_services', 'vpc_networks', 'python_modules',
+];
+
 for (const path of files) {
 	let raw;
 	try {
@@ -16,8 +26,10 @@ for (const path of files) {
 
 	const cfg = JSON.parse(raw);
 
-	// ASSETS is reserved in Pages — remove explicit declaration
-	delete cfg.assets;
+	// Strip all Worker-only fields
+	for (const field of WORKER_ONLY_FIELDS) {
+		delete cfg[field];
+	}
 
 	// Remove KV namespaces with no id, then deduplicate by binding name
 	if (Array.isArray(cfg.kv_namespaces)) {
@@ -45,8 +57,14 @@ for (const path of files) {
 		cfg.triggers = { crons: cfg.triggers?.crons ?? [] };
 	}
 
-	// Remove previews section (not valid in Pages Worker config)
-	delete cfg.previews;
+	// dev field: strip unsupported keys
+	if (cfg.dev) {
+		delete cfg.dev.enable_containers;
+		delete cfg.dev.generate_types;
+	}
+
+	// Fix pages_build_output_dir — must be relative, not absolute local path
+	cfg.pages_build_output_dir = 'dist';
 
 	writeFileSync(path, JSON.stringify(cfg, null, 2));
 	console.log(`Patched ${path}`);
