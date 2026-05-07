@@ -294,7 +294,7 @@ static glm::mat4 build_shadow_matrix(const glm::vec3& toLightDir,
     float sy   = originBL ?  0.5f : -0.5f;
     float sz   = homogeneous ? 0.5f : 1.0f;
     float tz   = homogeneous ? 0.5f : 0.0f;
-    tz -= 0.0005f; // shadow bias (prevents self-shadowing acne)
+    tz -= 0.0005f; // shadow bias 
 
     float bxCrop[16] = {
         0.5f, 0.0f, 0.0f, 0.0f,
