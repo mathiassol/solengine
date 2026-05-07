@@ -1,0 +1,37 @@
+#pragma once
+#include "sol/export.h"
+#include "sol/scene/scene.h"
+#include <memory>
+#include <string>
+
+namespace sol {
+
+class Engine;
+
+// Manages the currently active scene.
+// Engine::scene_manager() returns this.
+class SOL_API SceneManager {
+public:
+    // Load a scene from disk and make it current (calls on_ready).
+    bool load_scene(const std::string& path, Engine& engine);
+
+    // Replace current scene with an already-constructed scene.
+    void set_scene(std::unique_ptr<Scene> scene, Engine& engine);
+
+    // Returns the active scene (may be null before first load).
+    Scene* current() const { return m_scene.get(); }
+
+    // Call from the game's on_update.
+    void update(Engine& engine, float dt);
+
+    // Call from the game's on_render.
+    void render(Engine& engine);
+
+    // Graceful unload (calls on_destroy on all nodes).
+    void unload(Engine& engine);
+
+private:
+    std::unique_ptr<Scene> m_scene;
+};
+
+} // namespace sol

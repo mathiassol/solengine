@@ -1,0 +1,7 @@
+[sol][info ] Renderer initialized (bgfx)
+[sol][info ] Physics initialized (Jolt)
+[sol][info ] ImGui initialized
+[sol][info ] Engine initialized
+[sol][info ] Loaded game: Space Demo
+[sol][info ] Space demo: scene built
+[sol][info ] Entering main loop

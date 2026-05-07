@@ -2,10 +2,12 @@
 #include "sol/log.h"
 
 #include "platform/window.h"
-#include "render/renderer.h"
+#include "render/bgfx_renderer.h"
 #include "physics/physics.h"
 #include "ui/imgui_layer.h"
 #include "asset/gltf_loader.h"
+
+#include "sol/scene/scene_manager.h"
 
 #include <GLFW/glfw3.h>
 #include <bgfx/bgfx.h>
@@ -30,10 +32,11 @@ Engine::~Engine() { shutdown(); }
 bool Engine::init(const EngineConfig& cfg) {
     m_cfg     = cfg;
     m_window  = std::make_unique<Window>();
-    m_renderer= std::make_unique<Renderer>();
+    if (!m_renderer) m_renderer = std::make_unique<BgfxRenderer>(); // default backend
     m_physics = std::make_unique<PhysicsWorld>();
     m_imgui   = std::make_unique<ImGuiLayer>();
     m_assets  = std::make_unique<GltfLoader>();
+    m_scene_manager = std::make_unique<SceneManager>();
 
     if (!m_window->init(cfg.title, cfg.width, cfg.height))      return false;
     if (!m_renderer->init(*m_window))                           return false;
@@ -47,11 +50,17 @@ bool Engine::init(const EngineConfig& cfg) {
 
 void Engine::shutdown() {
     if (m_imgui)    m_imgui->shutdown();
+    if (m_scene_manager) m_scene_manager->unload(*this);
     if (m_physics)  m_physics->shutdown();
     if (m_renderer) m_renderer->shutdown();
     if (m_window)   m_window->shutdown();
+    m_scene_manager.reset();
     m_imgui.reset(); m_physics.reset(); m_renderer.reset(); m_window.reset(); m_assets.reset();
     m_running = false;
+}
+
+ImGuiContext* Engine::imgui_context() const {
+    return ImGui::GetCurrentContext();
 }
 
 int Engine::run(const SolGameApi& game) {
@@ -64,6 +73,12 @@ int Engine::run(const SolGameApi& game) {
 
     if (game.on_init) game.on_init(this);
 
+    // DXGI swap chain creation during bgfx::init can pump Win32 messages and
+    // leave a stale WM_CLOSE in the queue before our loop starts. Reset the
+    // flag so the window stays open as intended.
+    glfwSetWindowShouldClose(m_window->handle(), GLFW_FALSE);
+    SOL_INFO("Entering main loop");
+
     int64_t last = bx::getHPCounter();
     const double freq = (double)bx::getHPFrequency();
 
@@ -74,13 +89,10 @@ int Engine::run(const SolGameApi& game) {
 
         m_window->poll();
         m_imgui->begin_frame();
-
         if (game.on_update) game.on_update(this, m_dt);
         m_physics->step(m_dt);
-
         m_renderer->begin_frame();
         if (game.on_render) game.on_render(this);
-
         m_imgui->end_frame();
         m_renderer->end_frame();
     }
@@ -154,6 +166,25 @@ bool Engine::self_test() {
     SOL_INFO("=== self-test PASSED ===");
     m_registry.destroy(e);
     return true;
+}
+
+bool Engine::key_down(int key) const {
+    return m_window && glfwGetKey(m_window->handle(), key) == GLFW_PRESS;
+}
+bool Engine::mouse_button_down(int button) const {
+    return m_window && glfwGetMouseButton(m_window->handle(), button) == GLFW_PRESS;
+}
+void Engine::cursor_position(double& x, double& y) const {
+    if (m_window) glfwGetCursorPos(m_window->handle(), &x, &y);
+    else x = y = 0.0;
+}
+GLFWwindow* Engine::native_window() const {
+    return m_window ? m_window->handle() : nullptr;
+}
+void Engine::set_cursor_captured(bool captured) const {
+    if (!m_window) return;
+    glfwSetInputMode(m_window->handle(), GLFW_CURSOR,
+        captured ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
 }
 
 } // namespace sol

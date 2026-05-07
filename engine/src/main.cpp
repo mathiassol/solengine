@@ -35,19 +35,18 @@ static void print_usage() {
 int main(int argc, char** argv) {
     if (argc < 2) { print_usage(); return 1; }
 
-    sol::Engine engine;
     sol::EngineConfig cfg;
     cfg.title = "Sol Engine";
 
     if (std::strcmp(argv[1], "--selftest") == 0) {
+        sol::Engine engine;
         if (!engine.init(cfg)) return 2;
         bool ok = engine.self_test();
         engine.shutdown();
         return ok ? 0 : 3;
     }
 
-    if (!engine.init(cfg)) return 2;
-
+    // Load the game DLL before creating the engine so we can validate it early.
     LibHandle lib = lib_open(argv[1]);
     if (!lib) {
         SOL_ERROR(std::string("failed to load game module: ") + argv[1]);
@@ -62,9 +61,17 @@ int main(int argc, char** argv) {
     const SolGameApi* api = get_api();
     if (!api) { SOL_ERROR("sol_get_game_api returned null"); lib_close(lib); return 6; }
 
-    int rc = engine.run(*api);
+    // Engine lives in a nested scope so its destructor (which cleans up the EnTT
+    // registry, including component storage pools that have vtables instantiated
+    // inside the game DLL) runs BEFORE lib_close() unmaps the DLL.
+    int rc;
+    {
+        sol::Engine engine;
+        if (!engine.init(cfg)) { lib_close(lib); return 2; }
+        rc = engine.run(*api);
+        engine.shutdown();
+    } // engine (and EnTT registry) fully destroyed here
 
-    engine.shutdown();
     lib_close(lib);
     return rc;
 }

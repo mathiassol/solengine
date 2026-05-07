@@ -12,15 +12,15 @@ struct MeshVertex {
     glm::vec2 uv;
 };
 
-struct Mesh {
+struct GltfMesh {
     std::vector<MeshVertex> vertices;
     std::vector<uint32_t>   indices;
     std::string             name;
 };
 
 struct GltfModel {
-    std::string         path;
-    std::vector<Mesh>   meshes;
+    std::string            path;
+    std::vector<GltfMesh>  meshes;
 };
 
 class GltfLoader {

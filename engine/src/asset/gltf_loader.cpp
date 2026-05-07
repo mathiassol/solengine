@@ -35,7 +35,7 @@ std::shared_ptr<GltfModel> GltfLoader::load(const std::string& path) {
         const cgltf_mesh& gm = data->meshes[mi];
         for (size_t pi = 0; pi < gm.primitives_count; ++pi) {
             const cgltf_primitive& prim = gm.primitives[pi];
-            Mesh mesh;
+            GltfMesh mesh;
             mesh.name = gm.name ? gm.name : "mesh";
 
             const cgltf_accessor* pos_acc = nullptr;

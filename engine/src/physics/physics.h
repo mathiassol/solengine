@@ -4,6 +4,7 @@
 namespace JPH {
     class PhysicsSystem;
     class TempAllocatorImpl;
+    class TempAllocator;
     class JobSystemThreadPool;
 }
 
@@ -18,7 +19,8 @@ public:
     void shutdown();
     void step(float dt);
 
-    JPH::PhysicsSystem* system() const { return m_system.get(); }
+    JPH::PhysicsSystem*  system()     const { return m_system.get(); }
+    JPH::TempAllocator&  temp_alloc() const;
 
 private:
     std::unique_ptr<JPH::TempAllocatorImpl>   m_temp;

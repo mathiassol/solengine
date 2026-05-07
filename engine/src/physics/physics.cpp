@@ -102,6 +102,8 @@ void PhysicsWorld::shutdown() {
     // to allow re-init without leaking.
 }
 
+JPH::TempAllocator& PhysicsWorld::temp_alloc() const { return *m_temp; }
+
 void PhysicsWorld::step(float dt) {
     if (!m_initialized) return;
     constexpr int collision_steps = 1;

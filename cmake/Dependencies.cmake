@@ -62,8 +62,16 @@ FetchContent_Declare(cgltf
     GIT_TAG        v1.14
     GIT_SHALLOW    TRUE)
 
+# ---- nlohmann/json (single-header JSON, used for scene files) ----
+set(JSON_BuildTests     OFF CACHE BOOL "" FORCE)
+set(JSON_Install        OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG        v3.11.3
+    GIT_SHALLOW    TRUE)
+
 message(STATUS "Fetching dependencies (first run downloads a lot)...")
-FetchContent_MakeAvailable(glm entt glfw bgfx JoltPhysics imgui cgltf)
+FetchContent_MakeAvailable(glm entt glfw bgfx JoltPhysics imgui cgltf json)
 
 # ---- Build ImGui as a static lib (core + GLFW backend) ----
 add_library(imgui STATIC

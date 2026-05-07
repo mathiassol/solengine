@@ -16,15 +16,14 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${SOL_OUT})
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${SOL_OUT})
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${SOL_OUT}/lib)
 
-option(SOL_BUILD_DEMOS "Build voxel and space demo games" ON)
+option(SOL_BUILD_DEMOS "Build demo game" ON)
 
 include(cmake/Dependencies.cmake)
 
 add_subdirectory(engine)
 
 if(SOL_BUILD_DEMOS)
-    add_subdirectory(demos/voxel)
-    add_subdirectory(demos/space)
+    add_subdirectory(demo)
 endif()
 
 message(STATUS "")

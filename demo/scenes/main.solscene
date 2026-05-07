@@ -1,0 +1,278 @@
+{
+  "sol_scene": 1,
+  "name": "Main",
+  "root": {
+    "type": "Node3D",
+    "name": "World",
+    "position": [0.0, 0.0, 0.0],
+    "rotation": [0.0, 0.0, 0.0],
+    "scale": [1.0, 1.0, 1.0],
+    "children": [
+      {
+        "type": "DirectionalLight",
+        "name": "Sun",
+        "position": [0.0, 10.0, 0.0],
+        "rotation": [-45.0, 30.0, 0.0],
+        "scale": [1.0, 1.0, 1.0],
+        "color": [1.0, 0.95, 0.85],
+        "intensity": 3.0
+      },
+      {
+        "type": "StaticBody3D",
+        "name": "Floor",
+        "position": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0],
+        "children": [
+          {
+            "type": "CollisionShape3D",
+            "name": "FloorShape",
+            "position": [0.0, -0.5, 0.0],
+            "rotation": [0.0, 0.0, 0.0],
+            "scale": [1.0, 1.0, 1.0],
+            "shape": "box",
+            "extents": [25.0, 0.5, 25.0]
+          },
+          {
+            "type": "MeshNode",
+            "name": "FloorMesh",
+            "position": [0.0, -0.5, 0.0],
+            "rotation": [0.0, 0.0, 0.0],
+            "scale": [50.0, 1.0, 50.0],
+            "mesh": "cube",
+            "material": {
+              "base_color": [0.35, 0.55, 0.35, 1.0],
+              "lit": true,
+              "double_sided": false
+            }
+          }
+        ]
+      },
+      {
+        "type": "StaticBody3D",
+        "name": "Crate1",
+        "position": [3.0, 0.5, -4.0],
+        "rotation": [0.0, 25.0, 0.0],
+        "scale": [1.0, 1.0, 1.0],
+        "children": [
+          {
+            "type": "CollisionShape3D",
+            "name": "CrateShape1",
+            "position": [0.0, 0.0, 0.0],
+            "rotation": [0.0, 0.0, 0.0],
+            "scale": [1.0, 1.0, 1.0],
+            "shape": "box",
+            "extents": [0.5, 0.5, 0.5]
+          },
+          {
+            "type": "MeshNode",
+            "name": "CrateMesh1",
+            "position": [0.0, 0.0, 0.0],
+            "rotation": [0.0, 0.0, 0.0],
+            "scale": [1.0, 1.0, 1.0],
+            "mesh": "cube",
+            "material": {
+              "base_color": [0.6, 0.45, 0.25, 1.0],
+              "lit": true,
+              "double_sided": false
+            }
+          }
+        ]
+      },
+      {
+        "type": "StaticBody3D",
+        "name": "Crate2",
+        "position": [-4.0, 0.5, -3.0],
+        "rotation": [0.0, -15.0, 0.0],
+        "scale": [1.0, 1.0, 1.0],
+        "children": [
+          {
+            "type": "CollisionShape3D",
+            "name": "CrateShape2",
+            "position": [0.0, 0.0, 0.0],
+            "rotation": [0.0, 0.0, 0.0],
+            "scale": [1.0, 1.0, 1.0],
+            "shape": "box",
+            "extents": [0.5, 0.5, 0.5]
+          },
+          {
+            "type": "MeshNode",
+            "name": "CrateMesh2",
+            "position": [0.0, 0.0, 0.0],
+            "rotation": [0.0, 0.0, 0.0],
+            "scale": [1.0, 1.0, 1.0],
+            "mesh": "cube",
+            "material": {
+              "base_color": [0.55, 0.4, 0.2, 1.0],
+              "lit": true,
+              "double_sided": false
+            }
+          }
+        ]
+      },
+      {
+        "type": "StaticBody3D",
+        "name": "Crate3",
+        "position": [3.0, 1.5, -4.0],
+        "rotation": [0.0, 10.0, 0.0],
+        "scale": [1.0, 1.0, 1.0],
+        "children": [
+          {
+            "type": "CollisionShape3D",
+            "name": "CrateShape3",
+            "position": [0.0, 0.0, 0.0],
+            "rotation": [0.0, 0.0, 0.0],
+            "scale": [1.0, 1.0, 1.0],
+            "shape": "box",
+            "extents": [0.5, 0.5, 0.5]
+          },
+          {
+            "type": "MeshNode",
+            "name": "CrateMesh3",
+            "position": [0.0, 0.0, 0.0],
+            "rotation": [0.0, 0.0, 0.0],
+            "scale": [1.0, 1.0, 1.0],
+            "mesh": "cube",
+            "material": {
+              "base_color": [0.65, 0.5, 0.3, 1.0],
+              "lit": true,
+              "double_sided": false
+            }
+          }
+        ]
+      },
+      {
+        "type": "StaticBody3D",
+        "name": "WallNorth",
+        "position": [0.0, 2.0, -25.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0],
+        "children": [
+          {
+            "type": "CollisionShape3D",
+            "name": "WallNorthShape",
+            "position": [0.0, 0.0, 0.0],
+            "rotation": [0.0, 0.0, 0.0],
+            "scale": [1.0, 1.0, 1.0],
+            "shape": "box",
+            "extents": [25.0, 2.0, 0.5]
+          },
+          {
+            "type": "MeshNode",
+            "name": "WallNorthMesh",
+            "position": [0.0, 0.0, 0.0],
+            "rotation": [0.0, 0.0, 0.0],
+            "scale": [50.0, 4.0, 1.0],
+            "mesh": "cube",
+            "material": {
+              "base_color": [0.55, 0.55, 0.6, 1.0],
+              "lit": true,
+              "double_sided": false
+            }
+          }
+        ]
+      },
+      {
+        "type": "StaticBody3D",
+        "name": "WallSouth",
+        "position": [0.0, 2.0, 25.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0],
+        "children": [
+          {
+            "type": "CollisionShape3D",
+            "name": "WallSouthShape",
+            "position": [0.0, 0.0, 0.0],
+            "rotation": [0.0, 0.0, 0.0],
+            "scale": [1.0, 1.0, 1.0],
+            "shape": "box",
+            "extents": [25.0, 2.0, 0.5]
+          },
+          {
+            "type": "MeshNode",
+            "name": "WallSouthMesh",
+            "position": [0.0, 0.0, 0.0],
+            "rotation": [0.0, 0.0, 0.0],
+            "scale": [50.0, 4.0, 1.0],
+            "mesh": "cube",
+            "material": {
+              "base_color": [0.55, 0.55, 0.6, 1.0],
+              "lit": true,
+              "double_sided": false
+            }
+          }
+        ]
+      },
+      {
+        "type": "StaticBody3D",
+        "name": "WallEast",
+        "position": [25.0, 2.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0],
+        "children": [
+          {
+            "type": "CollisionShape3D",
+            "name": "WallEastShape",
+            "position": [0.0, 0.0, 0.0],
+            "rotation": [0.0, 0.0, 0.0],
+            "scale": [1.0, 1.0, 1.0],
+            "shape": "box",
+            "extents": [0.5, 2.0, 25.0]
+          },
+          {
+            "type": "MeshNode",
+            "name": "WallEastMesh",
+            "position": [0.0, 0.0, 0.0],
+            "rotation": [0.0, 0.0, 0.0],
+            "scale": [1.0, 4.0, 50.0],
+            "mesh": "cube",
+            "material": {
+              "base_color": [0.55, 0.55, 0.6, 1.0],
+              "lit": true,
+              "double_sided": false
+            }
+          }
+        ]
+      },
+      {
+        "type": "StaticBody3D",
+        "name": "WallWest",
+        "position": [-25.0, 2.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0],
+        "children": [
+          {
+            "type": "CollisionShape3D",
+            "name": "WallWestShape",
+            "position": [0.0, 0.0, 0.0],
+            "rotation": [0.0, 0.0, 0.0],
+            "scale": [1.0, 1.0, 1.0],
+            "shape": "box",
+            "extents": [0.5, 2.0, 25.0]
+          },
+          {
+            "type": "MeshNode",
+            "name": "WallWestMesh",
+            "position": [0.0, 0.0, 0.0],
+            "rotation": [0.0, 0.0, 0.0],
+            "scale": [1.0, 4.0, 50.0],
+            "mesh": "cube",
+            "material": {
+              "base_color": [0.55, 0.55, 0.6, 1.0],
+              "lit": true,
+              "double_sided": false
+            }
+          }
+        ]
+      },
+      {
+        "type": "SceneInstance",
+        "name": "PlayerInstance",
+        "position": [0.0, 2.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0],
+        "scene": "scenes/player.solscene"
+      }
+    ]
+  }
+}
