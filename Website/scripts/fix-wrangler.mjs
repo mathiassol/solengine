@@ -11,17 +11,33 @@ for (const path of files) {
 	try {
 		raw = readFileSync(path, 'utf8');
 	} catch {
-		continue; // file doesn't exist, skip
+		continue;
 	}
 
 	const cfg = JSON.parse(raw);
 
-	// ASSETS is reserved in Pages — remove explicit declaration (Pages provides it automatically)
+	// ASSETS is reserved in Pages — remove explicit declaration
 	delete cfg.assets;
 
-	// Remove KV namespaces with no id (adapter auto-provisioning not supported in Pages)
+	// Remove KV namespaces with no id, then deduplicate by binding name
 	if (Array.isArray(cfg.kv_namespaces)) {
-		cfg.kv_namespaces = cfg.kv_namespaces.filter((kv) => kv.id);
+		const seen = new Set();
+		cfg.kv_namespaces = cfg.kv_namespaces.filter((kv) => {
+			if (!kv.id) return false;
+			if (seen.has(kv.binding)) return false;
+			seen.add(kv.binding);
+			return true;
+		});
+	}
+
+	// Deduplicate D1 databases by binding name
+	if (Array.isArray(cfg.d1_databases)) {
+		const seen = new Set();
+		cfg.d1_databases = cfg.d1_databases.filter((db) => {
+			if (seen.has(db.binding)) return false;
+			seen.add(db.binding);
+			return true;
+		});
 	}
 
 	// triggers must be { crons: [...] }, not {}
