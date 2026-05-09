@@ -1,0 +1,21 @@
+{
+  "name": "ModelViewer",
+  "root": {
+    "type": "Node3D",
+    "name": "Root",
+    "children": [
+      {
+        "type": "ModelNode",
+        "name": "Model",
+        "path": "model.glb"
+      },
+      {
+        "type": "DirectionalLight",
+        "name": "Sun",
+        "rotation": [-45.0, 30.0, 0.0],
+        "intensity": 6.0,
+        "cast_shadow": true
+      }
+    ]
+  }
+}

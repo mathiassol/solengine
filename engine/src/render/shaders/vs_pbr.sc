@@ -4,6 +4,7 @@ $output v_worldPos, v_normalWS, v_tangentWS, v_bitangentWS, v_texcoord0, v_color
 #include <bgfx_shader.sh>
 
 uniform mat4 u_lightMtx;
+uniform mat4 u_normalMtx;   // inverse-transpose of model matrix (computed on CPU)
 
 void main()
 {
@@ -12,9 +13,11 @@ void main()
 
     v_worldPos = worldPos.xyz;
 
-    // Transform normal and tangent (assumes uniform scale)
-    vec3 N = normalize(mul(u_model[0], vec4(a_normal,       0.0)).xyz);
-    vec3 T = normalize(mul(u_model[0], vec4(a_tangent.xyz,  0.0)).xyz);
+    // Use inverse-transpose normal matrix for correct normals under non-uniform scale
+    // Pre-transpose for D3D11: bgfx transposes built-in u_model internally, we must do it
+    // manually for custom uniforms since setUniform() does not auto-transpose.
+    vec3 N = normalize(mul(u_normalMtx, vec4(a_normal, 0.0)).xyz);
+    vec3 T = normalize(mul(u_normalMtx, vec4(a_tangent.xyz, 0.0)).xyz);
     T = normalize(T - dot(T, N) * N); // re-orthogonalise
     vec3 B = cross(N, T) * a_tangent.w;
 

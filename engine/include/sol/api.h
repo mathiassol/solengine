@@ -5,7 +5,10 @@
 
 #include <cstdint>
 
-#if defined(_WIN32)
+#if defined(SOL_STATIC_BUILD)
+    #define SOL_EXPORT extern "C"
+    #define SOL_IMPORT extern "C"
+#elif defined(_WIN32)
     #define SOL_EXPORT extern "C" __declspec(dllexport)
     #define SOL_IMPORT extern "C" __declspec(dllimport)
 #else

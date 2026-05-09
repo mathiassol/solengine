@@ -5,18 +5,26 @@
 ### What Works
 | System | Technology | Status |
 |--------|-----------|--------|
-| Rendering | bgfx (D3D11 / GL / Vulkan / Metal) | ✅ Forward shading, meshes, materials, lighting |
+| Rendering | bgfx (D3D11) | ✅ Forward PBR, PCF shadows, HDR + tonemap, bloom, skybox |
+| Lights | Directional + Point + Spot | ✅ Up to 8 dynamic lights, attenuation, shadow maps |
+| Materials | Cook-Torrance PBR | ✅ Albedo, Normal, Metallic/Roughness, Emissive, AO |
+| Post-processing | HDR framebuffer | ✅ ACES tonemap, Kawase bloom, gamma correct output |
+| Skybox | Equirectangular HDR | ✅ Cube map skybox rendered at infinity |
 | ECS | EnTT | ✅ Full component registry, views, groups |
+| Scene system | Node tree (.solscene) | ✅ Node3D, MeshNode, Camera3D, Light3D hierarchy |
 | Physics | Jolt Physics | ✅ Rigid bodies, step, basic collision |
 | UI | Dear ImGui | ✅ Every frame, HUD and debug panels |
-| Math | GLM | ✅ Vectors, matrices, transforms |
-| Assets | cgltf | ✅ GLB/GLTF mesh + material loading |
-| Build | CMake + FetchContent | ✅ Engine compiles to DLL, games as separate DLLs |
+| Math | GLM | ✅ Vectors, matrices, quaternion transforms |
+| Assets | cgltf | ✅ GLB/GLTF full scene + material + texture loading |
+| Build | CMake + FetchContent | ✅ Engine as DLL, games as separate DLLs |
 | Game ABI | C function-pointer contract | ✅ Stable, hot-swappable game DLLs |
-| Renderer abstraction | `sol::Renderer` pure-virtual | ✅ Just refactored — backends drop in |
+| Renderer abstraction | `sol::Renderer` pure-virtual | ✅ Backends drop in without changing game code |
+| CLI | `sol.exe` commands | ✅ `run`, `build`, `new` sub-commands |
+| Demo | Fly-cam model viewer | ✅ WASD + mouse look, N/P cycles GLBs in models/ |
 
 ### Known Weaknesses
-- **One forward-shading pass** — no shadows, no PBR, no post-processing
+- **No cascaded shadow maps (CSM)** — single shadow frustum; large scenes lose quality at distance
+- **No IBL (Image-Based Lighting)** — skybox is visual only; does not contribute to PBR diffuse/specular probes
 - **Mesh is bgfx-coupled** — `vbh_idx / ibh_idx` are bgfx handles; a Vulkan backend would need its own mesh type
 - **Input is raw GLFW** — key/button queries on `Engine`; no action maps, no gamepad
 - **No event system** — subsystems call each other directly; no decoupled message bus
@@ -24,7 +32,7 @@
 - **No editor** — everything is hard-coded at runtime
 - **No project system** — game projects are just raw CMake subdirectories
 - **No scripting** — all game logic must be compiled C++
-- **Asset pipeline is minimal** — loader exists but no build-time compilation, no streaming, no hot-reload
+- **Asset pipeline is build-time only** — no streaming, no hot-reload, no UUID-based asset database
 - **Window is GLFW-only** — `Window::handle()` leaks `GLFWwindow*` into calling code
 
 ---
@@ -36,35 +44,19 @@ the most visible improvements.
 
 ---
 
-### Phase 1 — Solid Forward Renderer (foundation for everything else)
+### Phase 1 — Solid Forward Renderer ✅ COMPLETE
 
-The current single-pass Phong shading needs to grow before deferred or GI are
-possible.
+All Phase 1 goals have been implemented:
 
-**Shadowmaps**
-- Add a shadow pass: render scene depth from light POV into a depth texture
-- PCF (Percentage Closer Filtering) for soft edges
-- Cascaded Shadow Maps (CSM) for directional lights to cover large scenes
+- ✅ **Shadow maps** — depth pass from directional light, PCF soft shadows
+- ✅ **Point & Spot Lights** — up to 8 dynamic lights with attenuation and cone angle
+- ✅ **PBR Materials** — Cook-Torrance BRDF, metallic/roughness workflow, all texture slots
+- ✅ **HDR Pipeline & Post-Processing** — RGBA16F framebuffer, ACES tonemap, Kawase bloom
+- ✅ **Skybox** — equirectangular HDR → cube map, rendered at infinity
 
-**Point & Spot Lights**
-- Uniform array of lights passed to the shader (`u_lights[16]`)
-- Attenuation, spot cone angle, colour + intensity
-
-**PBR Materials**
-- Replace Phong with Cook-Torrance BRDF (metallic/roughness workflow)
-- Albedo, Normal, Metallic/Roughness, AO, Emissive texture slots
-- Image-Based Lighting (IBL): diffuse irradiance cube + pre-filtered specular cube
-
-**HDR Pipeline & Post-Processing**
-- Render to an HDR float framebuffer (RGBA16F)
-- Tonemapping pass (ACES or Uncharted 2 filmic)
-- Bloom (dual Kawase or compute-based hierarchical blur)
-- Colour grading via LUT
-
-**Skybox**
-- Equirectangular HDR panorama → cube map at load time
-- Rendered last (infinite sphere, reversed depth)
-- Feed into IBL diffuse/specular probes
+**Remaining Phase 1 improvements** (nice-to-have before Phase 2):
+- Cascaded Shadow Maps (CSM) for large outdoor scenes
+- IBL diffuse irradiance + pre-filtered specular from skybox cube map
 
 ---
 
@@ -431,3 +423,12 @@ Once the above is solid:
 5. **Batteries included, no forced dependencies** — every tool ships inside
    `sol.exe`.  A developer clones the engine, runs `sol new MyGame`, and has a
    working project with zero additional installs.
+
+
+
+# IMPORTANT!!!!
+### Remember to fix paths on new projects after creating the engine as an exe that installs to user root, since paths need to be hard-typed in cmake for it to compile.
+
+---
+
+*Last updated: Phase 1 complete — forward PBR renderer, PCF shadows, HDR/bloom/tonemap, skybox.*

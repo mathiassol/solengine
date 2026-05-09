@@ -8,6 +8,7 @@
 #include "sol/render/renderer.h"
 #include "sol/render/texture.h"
 #include "sol/scene/scene_manager.h"
+#include "sol/scene/model_node.h"
 
 #include <entt/entt.hpp>
 #include <glm/glm.hpp>
@@ -65,15 +66,15 @@ public:
     void  quit() { m_running = false; }
 
     // Input helpers — pass GLFW_KEY_* / GLFW_MOUSE_BUTTON_* constants.
-    SOL_API bool          key_down          (int glfw_key)    const;
-    SOL_API bool          mouse_button_down (int glfw_button) const;
-    SOL_API void          cursor_position   (double& x, double& y) const;
-    SOL_API GLFWwindow*   native_window     ()                const;
-    SOL_API void          set_cursor_captured(bool captured)  const;
+    bool          key_down          (int glfw_key)    const;
+    bool          mouse_button_down (int glfw_button) const;
+    void          cursor_position   (double& x, double& y) const;
+    GLFWwindow*   native_window     ()                const;
+    void          set_cursor_captured(bool captured)  const;
 
     // Returns the active ImGui context so game DLLs (which have their own
     // statically-linked copy of ImGui) can call ImGui::SetCurrentContext().
-    SOL_API ImGuiContext* imgui_context() const;
+    ImGuiContext* imgui_context() const;
 
     // Self-test: exercises every subsystem and returns true on success.
     // Used by `sol --selftest` and as the init demo.

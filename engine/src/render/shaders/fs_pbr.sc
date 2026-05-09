@@ -92,9 +92,14 @@ vec3 evalLight(vec3 N, vec3 V, vec3 fragPos,
 
 void main()
 {
-    // Albedo
+    // Albedo — textures are sRGB, decode to linear before lighting
     float hasAlbedo = u_params.y;
-    vec4 albedoTex  = mix(vec4_splat(1.0), texture2D(s_albedo, v_texcoord0), hasAlbedo);
+    vec4 albedoTex  = texture2D(s_albedo, v_texcoord0);
+    if (hasAlbedo > 0.5) {
+        albedoTex.rgb = pow(abs(albedoTex.rgb), vec3_splat(2.2));
+    } else {
+        albedoTex = vec4_splat(1.0);
+    }
     vec4 baseCol    = u_baseColor * v_color0 * albedoTex;
     vec3 albedo     = baseCol.rgb;
 
@@ -121,15 +126,20 @@ void main()
         return;
     }
 
-    // Shadow — 3×3 PCF for soft, anti-aliased edges
+    // Shadow — 3×3 PCF with slope-scale bias to eliminate acne
     float shadow = 1.0;
     if (u_shadowConfig.x > 0.5) {
         float ts = u_shadowConfig.y; // texel size (1.0 / shadow_map_resolution)
+        // Slope-scale bias: less bias on lit faces, more on grazing angles
+        vec3  shadowLdir = -normalize(u_lightData0[0].xyz);
+        float NdotSL     = clamp(dot(N, shadowLdir), 0.0, 1.0);
+        float shadowBias = mix(0.0005, 0.000025, NdotSL);
         shadow = 0.0;
         for (int xi = -1; xi <= 1; xi++) {
             for (int yi = -1; yi <= 1; yi++) {
                 vec4 sc = v_shadowCoord;
                 sc.xy += vec2(float(xi), float(yi)) * ts * sc.w;
+                sc.z  -= shadowBias * sc.w;
                 shadow += shadow2DProj(s_shadowMap, sc);
             }
         }
@@ -181,12 +191,6 @@ void main()
     vec3 ambientColor = u_ambient.rgb * albedo * (1.0 - metallic * 0.7);
     vec3 finalColor   = Lo + ambientColor + u_emissive.rgb;
 
-    // ACES tone mapping approximation
-    finalColor = (finalColor * (2.51 * finalColor + 0.03)) / (finalColor * (2.43 * finalColor + 0.59) + 0.14);
-    finalColor = clamp(finalColor, 0.0, 1.0);
-
-    // Gamma correction
-    finalColor = pow(finalColor, vec3_splat(1.0 / 2.2));
-
+    // Output raw linear HDR — tonemapping handled by post pass
     gl_FragColor = vec4(finalColor, baseCol.a);
 }

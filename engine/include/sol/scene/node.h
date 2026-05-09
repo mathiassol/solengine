@@ -19,6 +19,12 @@ public:
     Node()          = default;
     virtual ~Node() = default;
 
+    // Non-copyable (owns children via unique_ptr)
+    Node(const Node&)            = delete;
+    Node& operator=(const Node&) = delete;
+    Node(Node&&)                 = default;
+    Node& operator=(Node&&)      = default;
+
     // Lifecycle callbacks — called by Scene during load, update, render, unload.
     virtual void on_ready  (Engine& engine)                             {}
     virtual void on_update (Engine& engine, float dt)                   {}

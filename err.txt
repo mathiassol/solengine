@@ -1,7 +1,0 @@
-[sol][info ] Renderer initialized (bgfx, Direct3D 11)
-[sol][info ] Physics initialized (Jolt)
-[sol][info ] ImGui initialized
-[sol][info ] Engine initialized
-[sol][info ] Loaded game: Space Demo
-[sol][info ] Space demo: scene built (85 entities)
-[sol][info ] Entering main loop

@@ -3,6 +3,13 @@
 
 #include <bgfx/bgfx.h>
 
+#define STB_IMAGE_RESIZE_IMPLEMENTATION
+#include <stb_image_resize.h>
+
+#include <vector>
+#include <algorithm>
+#include <cstring>
+
 namespace sol {
 
 Texture::~Texture() { destroy_(); }
@@ -38,9 +45,46 @@ Texture Texture::from_rgba8(const void* pixels, int w, int h) {
         SOL_ERROR("Texture::from_rgba8: invalid args");
         return {};
     }
-    const bgfx::Memory* mem = bgfx::copy(pixels, uint32_t(w * h * 4));
+
+    // Count mip levels and total byte size
+    int mipCount = 0;
+    uint32_t totalBytes = 0;
+    {
+        int mw = w, mh = h;
+        while (true) {
+            totalBytes += (uint32_t)(mw * mh * 4);
+            ++mipCount;
+            if (mw == 1 && mh == 1) break;
+            mw = std::max(1, mw / 2);
+            mh = std::max(1, mh / 2);
+        }
+    }
+
+    const bgfx::Memory* mem = bgfx::alloc(totalBytes);
+
+    // Copy mip 0
+    std::memcpy(mem->data, pixels, (size_t)w * h * 4);
+
+    // Generate successive mip levels using box filter
+    const uint8_t* src     = static_cast<const uint8_t*>(pixels);
+    uint8_t*       dst     = mem->data + (size_t)w * h * 4;
+    int sw = w, sh = h;
+    while (sw > 1 || sh > 1) {
+        int dw = std::max(1, sw / 2);
+        int dh = std::max(1, sh / 2);
+        stbir_resize_uint8(src, sw, sh, 0, dst, dw, dh, 0, 4);
+        src = dst;
+        dst += (size_t)dw * dh * 4;
+        sw = dw; sh = dh;
+    }
+
     bgfx::TextureHandle th = bgfx::createTexture2D(
-        (uint16_t)w, (uint16_t)h, false, 1, bgfx::TextureFormat::RGBA8, 0, mem);
+        (uint16_t)w, (uint16_t)h,
+        /*hasMips=*/mipCount > 1,
+        /*numLayers=*/1,
+        bgfx::TextureFormat::RGBA8,
+        BGFX_SAMPLER_MIN_ANISOTROPIC | BGFX_SAMPLER_MAG_ANISOTROPIC,
+        mem);
     if (!bgfx::isValid(th)) {
         SOL_ERROR("Texture::from_rgba8: bgfx createTexture2D failed");
         return {};

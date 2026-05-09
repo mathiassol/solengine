@@ -1,4 +1,5 @@
 build/
+build_pack/
 out/
 .vs/
 .vscode/
@@ -7,4 +8,8 @@ out/
 CMakeUserPresets.json
 _deps/
 
+# Temp/debug files
+*.txt
+*.err
+imgui.ini
 .r2

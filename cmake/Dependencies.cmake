@@ -38,12 +38,13 @@ FetchContent_Declare(bgfx
     GIT_SHALLOW    TRUE)
 
 # ---- Jolt Physics ----
-set(TARGET_HELLO_WORLD       OFF CACHE BOOL "" FORCE)
-set(TARGET_PERFORMANCE_TEST  OFF CACHE BOOL "" FORCE)
-set(TARGET_SAMPLES           OFF CACHE BOOL "" FORCE)
-set(TARGET_UNIT_TESTS        OFF CACHE BOOL "" FORCE)
-set(TARGET_VIEWER            OFF CACHE BOOL "" FORCE)
-set(ENABLE_ALL_WARNINGS      OFF CACHE BOOL "" FORCE)
+set(TARGET_HELLO_WORLD               OFF CACHE BOOL "" FORCE)
+set(TARGET_PERFORMANCE_TEST          OFF CACHE BOOL "" FORCE)
+set(TARGET_SAMPLES                   OFF CACHE BOOL "" FORCE)
+set(TARGET_UNIT_TESTS                OFF CACHE BOOL "" FORCE)
+set(TARGET_VIEWER                    OFF CACHE BOOL "" FORCE)
+set(ENABLE_ALL_WARNINGS              OFF CACHE BOOL "" FORCE)
+set(USE_STATIC_MSVC_RUNTIME_LIBRARY  OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(JoltPhysics
     GIT_REPOSITORY https://github.com/jrouwe/JoltPhysics.git
     GIT_TAG        v5.2.0

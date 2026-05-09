@@ -8,6 +8,8 @@
 #include "sol/scene/static_body3d.h"
 #include "sol/scene/character_body3d.h"
 #include "sol/scene/scene_instance.h"
+#include "sol/scene/model_node.h"
+#include "asset/gltf_loader.h"
 
 #include "sol/engine.h"
 #include "sol/log.h"
@@ -63,6 +65,70 @@ void MeshNode::on_ready(Engine& /*engine*/) {
 void MeshNode::on_render(Engine& engine, const glm::mat4& world_xform) {
     if (m_mesh && m_mesh->valid())
         engine.renderer().submit(*m_mesh, material, world_xform);
+}
+
+// ============================================================
+//  ModelNode
+// ============================================================
+
+void ModelNode::on_ready(Engine& engine) {
+    if (path.empty()) {
+        SOL_WARN("ModelNode '" + name + "': no path set");
+        return;
+    }
+
+    auto model = engine.assets().load(path);
+    if (!model) {
+        SOL_ERROR("ModelNode '" + name + "': failed to load '" + path + "'");
+        return;
+    }
+
+    m_model_ref = model;  // keep textures alive
+    m_submeshes.reserve(model->meshes.size());
+
+    for (const auto& gm : model->meshes) {
+        if (gm.vertices.empty() || gm.indices.empty()) continue;
+
+        std::vector<Vertex> verts;
+        verts.reserve(gm.vertices.size());
+        for (const auto& mv : gm.vertices) {
+            Vertex v;
+            v.position = mv.position;
+            v.normal   = mv.normal;
+            v.uv       = mv.uv;
+            v.color    = 0xffffffff;
+            v.tangent  = mv.tangent;
+            verts.push_back(v);
+        }
+
+        auto mesh = std::make_shared<Mesh>(
+            Mesh::create(verts.data(), verts.size(),
+                         gm.indices.data(), gm.indices.size()));
+        if (!mesh->valid()) continue;
+
+        Material mat;
+        mat.base_color   = gm.base_color;
+        mat.metallic     = gm.metallic;
+        mat.roughness    = gm.roughness;
+        mat.emissive     = gm.emissive;
+        mat.double_sided = gm.double_sided;
+        if (gm.albedo_tex >= 0 && gm.albedo_tex < (int)model->textures.size())
+            mat.albedo = &model->textures[gm.albedo_tex];
+        if (gm.normal_tex >= 0 && gm.normal_tex < (int)model->textures.size())
+            mat.normal_map = &model->textures[gm.normal_tex];
+        if (gm.mr_tex >= 0 && gm.mr_tex < (int)model->textures.size())
+            mat.mr_map = &model->textures[gm.mr_tex];
+
+        m_submeshes.push_back({std::move(mesh), mat, gm.node_transform});
+    }
+
+    SOL_INFO("ModelNode '" + name + "': loaded " +
+             std::to_string(m_submeshes.size()) + " submeshes");
+}
+
+void ModelNode::on_render(Engine& engine, const glm::mat4& world_xform) {
+    for (const auto& sm : m_submeshes)
+        engine.renderer().submit(*sm.mesh, sm.mat, world_xform * sm.node_xform);
 }
 
 // ============================================================
@@ -191,6 +257,11 @@ static std::unique_ptr<Node> node_from_json(const json& j) {
         read_node3d(n.get());
         n->scene_path = j.value("scene", "");
         node = std::move(n);
+    } else if (type == "ModelNode") {
+        auto n = std::make_unique<ModelNode>();
+        read_node3d(n.get());
+        n->path = j.value("path", "");
+        node = std::move(n);
     } else {
         // Generic Node3D (or unknown type — treat as Node3D)
         auto n = std::make_unique<Node3D>();
@@ -256,6 +327,8 @@ static json node_to_json(const Node* node) {
         j["capsule_height"] = n->capsule_height;
     } else if (const auto* n = dynamic_cast<const SceneInstance*>(node)) {
         j["scene"] = n->scene_path;
+    } else if (const auto* mn = dynamic_cast<const ModelNode*>(node)) {
+        j["path"] = mn->path;
     }
 
     if (!node->children().empty()) {
@@ -336,7 +409,7 @@ void Scene::render(Engine& engine) {
     }
 
     // Submit all lights found in the scene
-    engine.renderer().set_ambient({0.15f, 0.15f, 0.20f});
+    engine.renderer().set_ambient({0.30f, 0.30f, 0.35f});
     std::function<void(Node*)> collect_lights = [&](Node* node) {
         if (auto* dl = dynamic_cast<DirectionalLight*>(node)) {
             Light l;
@@ -346,6 +419,9 @@ void Scene::render(Engine& engine) {
             l.intensity = dl->intensity;
             l.cast_shadow = dl->cast_shadow;
             engine.renderer().submit_light(l);
+
+            // Drive skybox from the directional light (toward_sun = -shining direction)
+            engine.renderer().set_sky(-dl->world_direction());
         } else if (auto* pl = dynamic_cast<PointLight*>(node)) {
             Light l;
             l.type = LightType::Point;
