@@ -7,6 +7,7 @@ out/
 *.user
 CMakeUserPresets.json
 _deps/
+SolEngine/demo/
 
 # Temp/debug files
 *.txt
