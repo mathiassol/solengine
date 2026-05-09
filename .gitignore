@@ -1,16 +1,26 @@
+# Build outputs
 build/
 build_pack/
 out/
+
+# IDE / editor
 .vs/
 .vscode/
 .cache/
 *.user
 CMakeUserPresets.json
-_deps/
-demo/
 
-# Temp/debug files
-*.txt
-*.err
+# CMake deps cache
+_deps/
+
+# Runtime-generated files
 imgui.ini
-.r2
+
+# Large binary assets — keep out of git
+*.glb
+*.gltf
+demo/models/
+
+# Temp / debug files
+*.err
+*.r2
