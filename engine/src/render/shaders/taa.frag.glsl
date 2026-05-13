@@ -118,13 +118,15 @@ void main() {
     vec3 sigma    = sqrt(variance);
     float gamma   = pc.params.z;
 
-    // Variance-clamped AABB (union with hard min/max prevents over-expansion)
-    vec3 aabb_min = max(mean - gamma * sigma, nbr_min);
-    vec3 aabb_max = min(mean + gamma * sigma, nbr_max);
+    // Variance-clamped AABB — expand to always cover neighbour range
+    vec3 aabb_min = min(mean - gamma * sigma, nbr_min);
+    vec3 aabb_max = max(mean + gamma * sigma, nbr_max);
+    // Safety: guarantee min <= max
+    aabb_min = min(aabb_min, aabb_max);
 
     // No history available — output current frame directly
     if (!valid) {
-        out_color = vec4(ycocg_to_rgb(clamp(cur_ycocg, vec3(0.0), vec3(65504.0))), 1.0);
+        out_color = vec4(clamp(ycocg_to_rgb(cur_ycocg), vec3(0.0), vec3(65504.0)), 1.0);
         return;
     }
 
@@ -145,5 +147,6 @@ void main() {
         blended += (cur_ycocg - mean) * sharp;
     }
 
-    out_color = vec4(ycocg_to_rgb(clamp(blended, vec3(0.0), vec3(65504.0))), 1.0);
+    // Convert back to RGB, THEN clamp — YCoCg Co/Cg channels are signed and must not be clamped to 0
+    out_color = vec4(clamp(ycocg_to_rgb(blended), vec3(0.0), vec3(65504.0)), 1.0);
 }
