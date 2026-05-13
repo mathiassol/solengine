@@ -15,6 +15,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <imgui.h>
 
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -45,6 +46,14 @@ public:
     bool init(const EngineConfig& cfg);
     void shutdown();
 
+    // Editor-mode init: no GLFW window; embeds Vulkan + editor ImGui into a Win32 HWND.
+    bool init_for_editor(void* hwnd, void* hinstance, int w, int h);
+
+    // Single-frame tick for editor use. Call after init_for_editor().
+    void tick_one_frame(float dt,
+                        std::function<void()> on_update,
+                        std::function<void()> on_render);
+
     // Inject a custom renderer backend before calling init().
     // Engine takes ownership.  If not called, the default bgfx renderer is used.
     void set_renderer(std::unique_ptr<Renderer> r) { m_renderer = std::move(r); }
@@ -58,6 +67,7 @@ public:
     Renderer&       renderer()     { return *m_renderer; }
     PhysicsWorld&   physics()      { return *m_physics; }
     ImGuiLayer&     imgui()        { return *m_imgui; }
+    ImGuiLayer*     imgui_ptr()    const { return m_imgui.get(); }
     GltfLoader&     assets()       { return *m_assets; }
     SceneManager&   scene_manager(){ return *m_scene_manager; }
 

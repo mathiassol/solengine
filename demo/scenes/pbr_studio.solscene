@@ -1,0 +1,172 @@
+{
+  "sol_scene": 1,
+  "name": "PBRStudio",
+  "root": {
+    "type": "Node3D",
+    "name": "PBRStudio",
+    "children": [
+
+      {
+        "type": "PointLight",
+        "name": "LightLeft",
+        "position": [-4.0, 3.6, 0.0],
+        "color": [1.0, 0.95, 0.88],
+        "intensity": 20.0,
+        "range": 9.0
+      },
+
+      {
+        "type": "PointLight",
+        "name": "LightCenter",
+        "position": [0.0, 3.6, 0.0],
+        "color": [1.0, 0.95, 0.88],
+        "intensity": 20.0,
+        "range": 9.0
+      },
+
+      {
+        "type": "PointLight",
+        "name": "LightRight",
+        "position": [4.0, 3.6, 0.0],
+        "color": [1.0, 0.95, 0.88],
+        "intensity": 20.0,
+        "range": 9.0
+      },
+
+      {
+        "type": "MeshNode",
+        "name": "Floor",
+        "position": [0.0, -0.05, 0.0],
+        "scale": [14.0, 0.1, 10.0],
+        "mesh": "cube",
+        "material": {
+          "base_color": [0.88, 0.88, 0.88, 1.0],
+          "roughness": 0.70,
+          "metallic": 0.0,
+          "lit": true
+        }
+      },
+
+      {
+        "type": "MeshNode",
+        "name": "Ceiling",
+        "position": [0.0, 4.05, 0.0],
+        "scale": [14.0, 0.1, 10.0],
+        "mesh": "cube",
+        "material": {
+          "base_color": [0.92, 0.92, 0.92, 1.0],
+          "roughness": 0.90,
+          "metallic": 0.0,
+          "lit": true
+        }
+      },
+
+      {
+        "type": "MeshNode",
+        "name": "WallBack",
+        "position": [0.0, 2.0, -5.0],
+        "scale": [14.0, 4.0, 0.2],
+        "mesh": "cube",
+        "material": {
+          "base_color": [0.90, 0.90, 0.90, 1.0],
+          "roughness": 0.90,
+          "metallic": 0.0,
+          "lit": true
+        }
+      },
+
+      {
+        "type": "MeshNode",
+        "name": "WallFront",
+        "position": [0.0, 2.0, 5.0],
+        "scale": [14.0, 4.0, 0.2],
+        "mesh": "cube",
+        "material": {
+          "base_color": [0.90, 0.90, 0.90, 1.0],
+          "roughness": 0.90,
+          "metallic": 0.0,
+          "lit": true
+        }
+      },
+
+      {
+        "type": "MeshNode",
+        "name": "WallLeft",
+        "position": [-7.0, 2.0, 0.0],
+        "scale": [0.2, 4.0, 10.0],
+        "mesh": "cube",
+        "material": {
+          "base_color": [0.90, 0.90, 0.90, 1.0],
+          "roughness": 0.90,
+          "metallic": 0.0,
+          "lit": true
+        }
+      },
+
+      {
+        "type": "MeshNode",
+        "name": "WallRight",
+        "position": [7.0, 2.0, 0.0],
+        "scale": [0.2, 4.0, 10.0],
+        "mesh": "cube",
+        "material": {
+          "base_color": [0.90, 0.90, 0.90, 1.0],
+          "roughness": 0.90,
+          "metallic": 0.0,
+          "lit": true
+        }
+      },
+
+      { "type": "MeshNode", "name": "Metal_R005", "position": [-4.0, 0.55, -2.0], "scale": [0.9, 0.9, 0.9], "mesh": "sphere",
+        "material": { "base_color": [0.90, 0.87, 0.82, 1.0], "roughness": 0.05, "metallic": 1.0, "lit": true } },
+      { "type": "MeshNode", "name": "Metal_R025", "position": [-2.0, 0.55, -2.0], "scale": [0.9, 0.9, 0.9], "mesh": "sphere",
+        "material": { "base_color": [0.90, 0.87, 0.82, 1.0], "roughness": 0.25, "metallic": 1.0, "lit": true } },
+      { "type": "MeshNode", "name": "Metal_R050", "position": [ 0.0, 0.55, -2.0], "scale": [0.9, 0.9, 0.9], "mesh": "sphere",
+        "material": { "base_color": [0.90, 0.87, 0.82, 1.0], "roughness": 0.50, "metallic": 1.0, "lit": true } },
+      { "type": "MeshNode", "name": "Metal_R075", "position": [ 2.0, 0.55, -2.0], "scale": [0.9, 0.9, 0.9], "mesh": "sphere",
+        "material": { "base_color": [0.90, 0.87, 0.82, 1.0], "roughness": 0.75, "metallic": 1.0, "lit": true } },
+      { "type": "MeshNode", "name": "Metal_R095", "position": [ 4.0, 0.55, -2.0], "scale": [0.9, 0.9, 0.9], "mesh": "sphere",
+        "material": { "base_color": [0.90, 0.87, 0.82, 1.0], "roughness": 0.95, "metallic": 1.0, "lit": true } },
+
+      { "type": "MeshNode", "name": "Diel_R005", "position": [-4.0, 0.55, 2.0], "scale": [0.9, 0.9, 0.9], "mesh": "sphere",
+        "material": { "base_color": [0.20, 0.45, 0.75, 1.0], "roughness": 0.05, "metallic": 0.0, "lit": true } },
+      { "type": "MeshNode", "name": "Diel_R025", "position": [-2.0, 0.55, 2.0], "scale": [0.9, 0.9, 0.9], "mesh": "sphere",
+        "material": { "base_color": [0.20, 0.45, 0.75, 1.0], "roughness": 0.25, "metallic": 0.0, "lit": true } },
+      { "type": "MeshNode", "name": "Diel_R050", "position": [ 0.0, 0.55, 2.0], "scale": [0.9, 0.9, 0.9], "mesh": "sphere",
+        "material": { "base_color": [0.20, 0.45, 0.75, 1.0], "roughness": 0.50, "metallic": 0.0, "lit": true } },
+      { "type": "MeshNode", "name": "Diel_R025b","position": [ 2.0, 0.55, 2.0], "scale": [0.9, 0.9, 0.9], "mesh": "sphere",
+        "material": { "base_color": [0.20, 0.45, 0.75, 1.0], "roughness": 0.75, "metallic": 0.0, "lit": true } },
+      { "type": "MeshNode", "name": "Diel_R095", "position": [ 4.0, 0.55, 2.0], "scale": [0.9, 0.9, 0.9], "mesh": "sphere",
+        "material": { "base_color": [0.20, 0.45, 0.75, 1.0], "roughness": 0.95, "metallic": 0.0, "lit": true } },
+
+      {
+        "type": "MeshNode",
+        "name": "LabelSlab",
+        "position": [0.0, 0.05, -2.0],
+        "scale": [10.0, 0.1, 0.8],
+        "mesh": "cube",
+        "material": {
+          "base_color": [0.20, 0.20, 0.22, 1.0],
+          "roughness": 0.50,
+          "metallic": 0.5,
+          "lit": true
+        }
+      },
+
+      {
+        "type": "MeshNode",
+        "name": "LabelSlabB",
+        "position": [0.0, 0.05, 2.0],
+        "scale": [10.0, 0.1, 0.8],
+        "mesh": "cube",
+        "material": {
+          "base_color": [0.20, 0.20, 0.22, 1.0],
+          "roughness": 0.50,
+          "metallic": 0.5,
+          "lit": true
+        }
+      }
+
+    ]
+  }
+}

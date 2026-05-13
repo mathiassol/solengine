@@ -125,7 +125,7 @@ static void process_node(
                                     pbr.base_color_factor[2], pbr.base_color_factor[3]};
                 mesh.metallic    = pbr.metallic_factor;
                 mesh.roughness   = pbr.roughness_factor;
-                mesh.double_sided = mat.double_sided;
+                mesh.double_sided = true; // GLB meshes are often viewed from inside (rooms/interiors); force double-sided for correct rendering under Vulkan Y-flip CW convention
                 mesh.emissive = { mat.emissive_factor[0],
                                   mat.emissive_factor[1],
                                   mat.emissive_factor[2] };
@@ -139,6 +139,22 @@ static void process_node(
                 mesh.normal_tex   = tex_idx(mat.normal_texture);
                 mesh.mr_tex       = tex_idx(pbr.metallic_roughness_texture);
                 mesh.emissive_tex = tex_idx(mat.emissive_texture);
+                mesh.alpha_mode   = (int)mat.alpha_mode;  // 0=opaque 1=mask 2=blend
+                mesh.alpha_cutoff = mat.alpha_cutoff > 0.0f ? mat.alpha_cutoff : 0.5f;
+
+                // KHR_materials_pbrSpecularGlossiness fallback
+                // (some GLBs use this older extension instead of standard metallic-roughness)
+                if (mat.has_pbr_specular_glossiness) {
+                    const auto& sg = mat.pbr_specular_glossiness;
+                    if (mesh.albedo_tex < 0)
+                        mesh.albedo_tex = tex_idx(sg.diffuse_texture);
+                    // Use diffuse_factor if it differs from the default (1,1,1,1)
+                    const auto& df = sg.diffuse_factor;
+                    mesh.base_color = {df[0], df[1], df[2], df[3]};
+                    // Map glossiness → roughness; no metallic in SG workflow
+                    mesh.roughness = 1.0f - sg.glossiness_factor;
+                    mesh.metallic  = 0.0f;
+                }
             }
 
             out.meshes.push_back(std::move(mesh));

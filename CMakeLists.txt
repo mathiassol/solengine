@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 project(SolEngine
     VERSION 0.1.0
-    DESCRIPTION "Sol game engine: bgfx + EnTT + GLM + Jolt + ImGui"
+    DESCRIPTION "Sol game engine runtime: bgfx + EnTT + GLM + Jolt + ImGui"
     LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -12,7 +12,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Use dynamic CRT (/MD) consistently across all targets (required when mixing DLLs)
 if(MSVC)
-    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL" CACHE STRING "" FORCE)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL" CACHE STRING "" FORCE)
 endif()
 
 # Single output dir so engine.exe and game DLLs land together
@@ -28,9 +28,15 @@ include(cmake/Dependencies.cmake)
 include(cmake/SolGame.cmake)
 
 add_subdirectory(engine)
+add_subdirectory(runtime)
 
 if(SOL_BUILD_DEMOS)
     add_subdirectory(demo)
+endif()
+
+option(SOL_BUILD_EDITOR "Build the Qt6 editor" ON)
+if(SOL_BUILD_EDITOR)
+    add_subdirectory(editor)
 endif()
 
 message(STATUS "")
@@ -38,4 +44,5 @@ message(STATUS "SolEngine configured.")
 message(STATUS "  Output dir  : ${SOL_OUT}")
 message(STATUS "  Demos       : ${SOL_BUILD_DEMOS}")
 message(STATUS "  Monolithic  : ${SOL_MONOLITHIC}")
+message(STATUS "  Editor      : ${SOL_BUILD_EDITOR}")
 message(STATUS "")

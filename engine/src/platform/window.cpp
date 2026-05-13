@@ -29,7 +29,10 @@ void Window::shutdown() {
     glfwTerminate();
 }
 
-void Window::poll()              { glfwPollEvents(); }
+void Window::poll() {
+    glfwPollEvents();
+    if (m_window) glfwGetFramebufferSize(m_window, &m_w, &m_h);
+}
 bool Window::should_close() const { return glfwWindowShouldClose(m_window); }
 
 void* Window::native_handle() const {

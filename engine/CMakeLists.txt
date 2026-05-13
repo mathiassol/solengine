@@ -2,203 +2,189 @@
 if(SOL_MONOLITHIC)
     add_library(engine_core STATIC
         src/engine.cpp
+        src/host.cpp
         src/platform/window.cpp
-        src/render/renderer.cpp
         src/render/mesh.cpp
         src/render/texture.cpp
+        src/render/vk/vk_context.cpp
+        src/render/vk/vk_swapchain.cpp
+        src/render/vk/vk_buffer.cpp
+        src/render/vk/vk_image.cpp
+        src/render/vk/vk_pipeline.cpp
+        src/render/vk/vk_desc.cpp
+        src/render/vk/vk_renderer.cpp
         src/physics/physics.cpp
         src/asset/gltf_loader.cpp
         src/ui/imgui_layer.cpp
+        src/ui/ImGuizmo.cpp
         src/log.cpp
         src/scene/scene.cpp
         src/scene/physics_nodes.cpp
         src/scene/scene_manager.cpp
-        src/project/project.cpp)
+        src/scene/fly_cam_controller.cpp
+        src/project/project.cpp
+        src/reflect.cpp)
 else()
     add_library(engine_core SHARED
         src/engine.cpp
+        src/host.cpp
         src/platform/window.cpp
-        src/render/renderer.cpp
         src/render/mesh.cpp
         src/render/texture.cpp
+        src/render/vk/vk_context.cpp
+        src/render/vk/vk_swapchain.cpp
+        src/render/vk/vk_buffer.cpp
+        src/render/vk/vk_image.cpp
+        src/render/vk/vk_pipeline.cpp
+        src/render/vk/vk_desc.cpp
+        src/render/vk/vk_renderer.cpp
         src/physics/physics.cpp
         src/asset/gltf_loader.cpp
         src/ui/imgui_layer.cpp
+        src/ui/ImGuizmo.cpp
         src/log.cpp
         src/scene/scene.cpp
         src/scene/physics_nodes.cpp
         src/scene/scene_manager.cpp
-        src/project/project.cpp)
+        src/scene/fly_cam_controller.cpp
+        src/project/project.cpp
+        src/reflect.cpp)
 endif()
 
 target_include_directories(engine_core
     PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-
-# stb_image.h lives in bgfx's bimg 3rdparty (already on disk, no extra download)
-target_include_directories(engine_core PRIVATE
-    ${bgfx_SOURCE_DIR}/bimg/3rdparty/stb)
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+            ${CMAKE_CURRENT_BINARY_DIR}/generated)  # for embedded SPIR-V headers
 
 target_link_libraries(engine_core
     PUBLIC
         glm::glm
         EnTT::EnTT
-        imgui          # PUBLIC so game DLLs can link their own static copy;
-                       # they must call ImGui::SetCurrentContext(e->imgui_context())
+        imgui
     PRIVATE
         glfw
-        bgfx
-        bx
-        bimg
+        volk
+        vma_iface
         Jolt
         cgltf
-        nlohmann_json::nlohmann_json)
+        nlohmann_json::nlohmann_json
+        stb_iface)
+
+# Platform-specific Vulkan surface extension
+if(WIN32)
+    target_compile_definitions(engine_core PRIVATE VK_USE_PLATFORM_WIN32_KHR)
+elseif(APPLE)
+    target_compile_definitions(engine_core PRIVATE VK_USE_PLATFORM_METAL_EXT)
+elseif(UNIX)
+    target_compile_definitions(engine_core PRIVATE VK_USE_PLATFORM_XLIB_KHR)
+endif()
+target_compile_definitions(engine_core PRIVATE VK_NO_PROTOTYPES)
+
+# Fix parallel PDB write contention on MSVC
+if(MSVC)
+    # Replace /Zi (shared PDB, causes C1041 in parallel builds) with /Z7 (embed debug info in .obj)
+    foreach(flag_var CMAKE_CXX_FLAGS_DEBUG CMAKE_CXX_FLAGS_RELWITHDEBINFO)
+        string(REPLACE "/Zi" "/Z7" ${flag_var} "${${flag_var}}")
+        string(REPLACE "/ZI" "/Z7" ${flag_var} "${${flag_var}}")
+    endforeach()
+    target_compile_options(engine_core PRIVATE /FS)
+endif()
 
 if(SOL_MONOLITHIC)
     target_compile_definitions(engine_core
         PUBLIC SOL_STATIC_BUILD=1 SOL_ENGINE_BUILD=1
         PUBLIC $<$<PLATFORM_ID:Windows>:NOMINMAX WIN32_LEAN_AND_MEAN>)
-
     set_target_properties(engine_core PROPERTIES OUTPUT_NAME "sol_engine_static")
 else()
     target_compile_definitions(engine_core
         PRIVATE SOL_ENGINE_BUILD=1
         PUBLIC  $<$<PLATFORM_ID:Windows>:NOMINMAX WIN32_LEAN_AND_MEAN>)
-
     set_target_properties(engine_core PROPERTIES
         OUTPUT_NAME "sol_engine"
         WINDOWS_EXPORT_ALL_SYMBOLS ON)
 endif()
 
-# ---- Default shaders: compiled to embeddable C headers via bgfx's shaderc.
-# Patch bgfxToolUtils.cmake: fix malformed $<IF:$<CONFIG:Debug>:0,3> expression
-# (should use commas, not colon, as separator in $<IF>)
-set(_bgfx_tool_file "${bgfx_SOURCE_DIR}/cmake/bgfxToolUtils.cmake")
-if(EXISTS "${_bgfx_tool_file}")
-    file(READ "${_bgfx_tool_file}" _bgfx_tool_content)
-    string(REPLACE
-        "$<IF:$<CONFIG:Debug>:0,3>"
-        "$<IF:$<CONFIG:Debug>,0,3>"
-        _bgfx_tool_content "${_bgfx_tool_content}")
-    file(WRITE "${_bgfx_tool_file}" "${_bgfx_tool_content}")
-endif()
-include(${bgfx_SOURCE_DIR}/cmake/bgfxToolUtils.cmake)
-set(BGFX_SHADER_INCLUDE_PATH ${bgfx_SOURCE_DIR}/bgfx/src)
+# ---- SPIR-V shader compilation via glslang_validator -------------------------
+# Locate glslang_validator built by FetchContent
+set(GLSLANG_VALIDATOR "$<TARGET_FILE:glslang-standalone>")
 
-set(SOL_SHADER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/render/shaders)
+set(SOL_SHADER_SRC ${CMAKE_CURRENT_SOURCE_DIR}/src/render/shaders)
 set(SOL_SHADER_OUT ${CMAKE_CURRENT_BINARY_DIR}/generated/shaders)
+file(MAKE_DIRECTORY ${SOL_SHADER_OUT})
 
-# Shadow shaders (minimal — no tangent/normal required)
-set(SOL_SHADOW_PROFILES s_5_0 s_6_0 120 100_es spirv)
+function(sol_compile_shader STAGE GLSL_FILE OUT_HEADER_VAR)
+    get_filename_component(FNAME ${GLSL_FILE} NAME)
+    string(REPLACE "." "_" VARNAME "${FNAME}")
+    set(SPV_FILE  "${SOL_SHADER_OUT}/${FNAME}.spv")
+    set(HDR_FILE  "${SOL_SHADER_OUT}/${FNAME}.h")
 
-bgfx_compile_shaders(
-    TYPE VERTEX
-    SHADERS     ${SOL_SHADER_DIR}/vs_shadow.sc
-    VARYING_DEF ${SOL_SHADER_DIR}/varying_shadow.def.sc
-    OUTPUT_DIR  ${SOL_SHADER_OUT}
-    OUT_FILES_VAR SOL_SHADOW_VS_OUT
-    AS_HEADERS
-    PROFILES ${SOL_SHADOW_PROFILES})
+    # Map stage name to glslang flag
+    if(STAGE STREQUAL "vert")
+        set(STAGE_FLAG "-S vert")
+    elseif(STAGE STREQUAL "frag")
+        set(STAGE_FLAG "-S frag")
+    else()
+        set(STAGE_FLAG "-S comp")
+    endif()
 
-bgfx_compile_shaders(
-    TYPE FRAGMENT
-    SHADERS     ${SOL_SHADER_DIR}/fs_shadow.sc
-    VARYING_DEF ${SOL_SHADER_DIR}/varying_shadow.def.sc
-    OUTPUT_DIR  ${SOL_SHADER_OUT}
-    OUT_FILES_VAR SOL_SHADOW_FS_OUT
-    AS_HEADERS
-    PROFILES ${SOL_SHADOW_PROFILES})
+    # Compile GLSL → SPIR-V
+    add_custom_command(
+        OUTPUT  ${SPV_FILE}
+        COMMAND ${GLSLANG_VALIDATOR}
+                -V --target-env vulkan1.2
+                -S ${STAGE}
+                -o ${SPV_FILE}
+                ${GLSL_FILE}
+        DEPENDS ${GLSL_FILE} glslang-standalone
+        COMMENT "Compiling ${FNAME} → SPIR-V"
+        VERBATIM)
 
-# PBR shaders (full lighting — uses tangents, shadow sampler, etc.)
-set(SOL_PBR_PROFILES s_5_0 s_6_0 150 300_es spirv)
+    # Convert SPIR-V binary → C header (uint32_t[])
+    add_custom_command(
+        OUTPUT  ${HDR_FILE}
+        COMMAND ${CMAKE_COMMAND}
+                -DSPV_FILE=${SPV_FILE}
+                -DHDR_FILE=${HDR_FILE}
+                -DVARNAME=${VARNAME}
+                -P ${CMAKE_SOURCE_DIR}/cmake/SpvToHeader.cmake
+        DEPENDS ${SPV_FILE}
+        COMMENT "Embedding ${FNAME}.spv as C header"
+        VERBATIM)
 
-bgfx_compile_shaders(
-    TYPE VERTEX
-    SHADERS     ${SOL_SHADER_DIR}/vs_pbr.sc
-    VARYING_DEF ${SOL_SHADER_DIR}/varying_pbr.def.sc
-    OUTPUT_DIR  ${SOL_SHADER_OUT}
-    OUT_FILES_VAR SOL_PBR_VS_OUT
-    AS_HEADERS
-    PROFILES ${SOL_PBR_PROFILES})
+    set(${OUT_HEADER_VAR} ${HDR_FILE} PARENT_SCOPE)
+endfunction()
 
-bgfx_compile_shaders(
-    TYPE FRAGMENT
-    SHADERS     ${SOL_SHADER_DIR}/fs_pbr.sc
-    VARYING_DEF ${SOL_SHADER_DIR}/varying_pbr.def.sc
-    OUTPUT_DIR  ${SOL_SHADER_OUT}
-    OUT_FILES_VAR SOL_PBR_FS_OUT
-    AS_HEADERS
-    PROFILES ${SOL_PBR_PROFILES})
-
-# Sky shaders (same profile as PBR — 150 minimum)
-set(SOL_SKY_PROFILES s_5_0 s_6_0 150 300_es spirv)
-
-bgfx_compile_shaders(
-    TYPE VERTEX
-    SHADERS     ${SOL_SHADER_DIR}/vs_sky.sc
-    VARYING_DEF ${SOL_SHADER_DIR}/varying_sky.def.sc
-    OUTPUT_DIR  ${SOL_SHADER_OUT}
-    OUT_FILES_VAR SOL_SKY_VS_OUT
-    AS_HEADERS
-    PROFILES ${SOL_SKY_PROFILES})
-
-bgfx_compile_shaders(
-    TYPE FRAGMENT
-    SHADERS     ${SOL_SHADER_DIR}/fs_sky.sc
-    VARYING_DEF ${SOL_SHADER_DIR}/varying_sky.def.sc
-    OUTPUT_DIR  ${SOL_SHADER_OUT}
-    OUT_FILES_VAR SOL_SKY_FS_OUT
-    AS_HEADERS
-    PROFILES ${SOL_SKY_PROFILES})
-
-# Fullscreen / bloom / post shaders (simple, profile 120 OK)
-set(SOL_FS_PROFILES s_5_0 s_6_0 120 100_es spirv)
-
-bgfx_compile_shaders(
-    TYPE VERTEX
-    SHADERS     ${SOL_SHADER_DIR}/vs_fullscreen.sc
-    VARYING_DEF ${SOL_SHADER_DIR}/varying_fullscreen.def.sc
-    OUTPUT_DIR  ${SOL_SHADER_OUT}
-    OUT_FILES_VAR SOL_FS_VS_OUT
-    AS_HEADERS
-    PROFILES ${SOL_FS_PROFILES})
-
-bgfx_compile_shaders(
-    TYPE FRAGMENT
-    SHADERS     ${SOL_SHADER_DIR}/fs_bloom_bright.sc
-    VARYING_DEF ${SOL_SHADER_DIR}/varying_fullscreen.def.sc
-    OUTPUT_DIR  ${SOL_SHADER_OUT}
-    OUT_FILES_VAR SOL_BLOOM_BRIGHT_OUT
-    AS_HEADERS
-    PROFILES ${SOL_FS_PROFILES})
-
-bgfx_compile_shaders(
-    TYPE FRAGMENT
-    SHADERS     ${SOL_SHADER_DIR}/fs_bloom_blur.sc
-    VARYING_DEF ${SOL_SHADER_DIR}/varying_fullscreen.def.sc
-    OUTPUT_DIR  ${SOL_SHADER_OUT}
-    OUT_FILES_VAR SOL_BLOOM_BLUR_OUT
-    AS_HEADERS
-    PROFILES ${SOL_FS_PROFILES})
-
-bgfx_compile_shaders(
-    TYPE FRAGMENT
-    SHADERS     ${SOL_SHADER_DIR}/fs_post.sc
-    VARYING_DEF ${SOL_SHADER_DIR}/varying_fullscreen.def.sc
-    OUTPUT_DIR  ${SOL_SHADER_OUT}
-    OUT_FILES_VAR SOL_POST_OUT
-    AS_HEADERS
-    PROFILES ${SOL_FS_PROFILES})
+sol_compile_shader(vert ${SOL_SHADER_SRC}/pbr.vert.glsl          SOL_H_pbr_vert)
+sol_compile_shader(frag ${SOL_SHADER_SRC}/pbr.frag.glsl          SOL_H_pbr_frag)
+sol_compile_shader(vert ${SOL_SHADER_SRC}/shadow.vert.glsl       SOL_H_shad_vert)
+sol_compile_shader(frag ${SOL_SHADER_SRC}/shadow.frag.glsl       SOL_H_shad_frag)
+sol_compile_shader(frag ${SOL_SHADER_SRC}/shadow_vsm.frag.glsl  SOL_H_shad_vsm_frag)
+sol_compile_shader(vert ${SOL_SHADER_SRC}/sky.vert.glsl          SOL_H_sky_vert)
+sol_compile_shader(frag ${SOL_SHADER_SRC}/sky.frag.glsl          SOL_H_sky_frag)
+sol_compile_shader(vert ${SOL_SHADER_SRC}/fullscreen.vert.glsl   SOL_H_fs_vert)
+sol_compile_shader(frag ${SOL_SHADER_SRC}/bloom_bright.frag.glsl SOL_H_bloom_b)
+sol_compile_shader(frag ${SOL_SHADER_SRC}/bloom_blur.frag.glsl   SOL_H_bloom_blur)
+sol_compile_shader(frag ${SOL_SHADER_SRC}/tonemap.frag.glsl      SOL_H_tonemap)
+sol_compile_shader(frag ${SOL_SHADER_SRC}/gbuf.frag.glsl         SOL_H_gbuf_frag)
+sol_compile_shader(frag ${SOL_SHADER_SRC}/deferred_light.frag.glsl SOL_H_deferred_frag)
+sol_compile_shader(frag ${SOL_SHADER_SRC}/ssao.frag.glsl          SOL_H_ssao_frag)
+sol_compile_shader(frag ${SOL_SHADER_SRC}/ssao_blur.frag.glsl     SOL_H_ssao_blur_frag)
+sol_compile_shader(frag ${SOL_SHADER_SRC}/ibl_sky_capture.frag.glsl  SOL_H_ibl_sky)
+sol_compile_shader(frag ${SOL_SHADER_SRC}/ibl_irradiance.frag.glsl   SOL_H_ibl_irr)
+sol_compile_shader(frag ${SOL_SHADER_SRC}/ibl_prefilter.frag.glsl    SOL_H_ibl_pref)
+sol_compile_shader(frag ${SOL_SHADER_SRC}/ibl_brdf_lut.frag.glsl     SOL_H_ibl_brdf)
+sol_compile_shader(frag ${SOL_SHADER_SRC}/taa.frag.glsl              SOL_H_taa_frag)
 
 target_sources(engine_core PRIVATE
-    ${SOL_SHADOW_VS_OUT} ${SOL_SHADOW_FS_OUT}
-    ${SOL_PBR_VS_OUT}    ${SOL_PBR_FS_OUT}
-    ${SOL_SKY_VS_OUT}    ${SOL_SKY_FS_OUT}
-    ${SOL_FS_VS_OUT}
-    ${SOL_BLOOM_BRIGHT_OUT} ${SOL_BLOOM_BLUR_OUT} ${SOL_POST_OUT})
-target_include_directories(engine_core PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+    ${SOL_H_pbr_vert}  ${SOL_H_pbr_frag}
+    ${SOL_H_shad_vert} ${SOL_H_shad_frag} ${SOL_H_shad_vsm_frag}
+    ${SOL_H_sky_vert}  ${SOL_H_sky_frag}
+    ${SOL_H_fs_vert}
+    ${SOL_H_bloom_b}   ${SOL_H_bloom_blur}
+    ${SOL_H_tonemap}
+    ${SOL_H_gbuf_frag} ${SOL_H_deferred_frag}
+    ${SOL_H_ssao_frag} ${SOL_H_ssao_blur_frag}
+    ${SOL_H_ibl_sky}   ${SOL_H_ibl_irr}
+    ${SOL_H_ibl_pref}  ${SOL_H_ibl_brdf}
+    ${SOL_H_taa_frag})
 
-# ---- engine.exe: launcher/runtime that loads game DLLs ----
-add_executable(engine src/main.cpp)
-target_link_libraries(engine PRIVATE engine_core)
-set_target_properties(engine PROPERTIES OUTPUT_NAME "sol")

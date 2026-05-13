@@ -63,9 +63,10 @@ private:
     uint16_t m_flat_normal    = 0xffff; // 1x1 flat normal (128,128,255,255)
     uint16_t m_white_mr       = 0xffff; // 1x1 MR (R=0, G=roughness=255, B=metallic=0)
 
-    // ---- Shadow matrix (computed in begin_frame from previous frame's light) ----
-    glm::mat4 m_light_mtx     {1.0f};
-    bool      m_has_shadow    = false;  // was there a shadow-casting dir light last frame?
+    // ---- Shadow matrix (computed once per frame on first submit call) ----
+    glm::mat4 m_light_mtx      {1.0f};
+    bool      m_has_shadow     = false; // true once shadow light found this frame
+    bool      m_render_started = false; // true after first submit() this frame
 
     // ---- HDR framebuffer (RGBA16F colour + D24S8 depth) ----
     uint16_t m_hdr_fb         = 0xffff;

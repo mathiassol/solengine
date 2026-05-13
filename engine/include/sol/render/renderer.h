@@ -6,6 +6,7 @@
 #include "sol/export.h"
 #include "sol/render/camera.h"
 #include "sol/render/light.h"
+#include "sol/render/render_settings.h"
 
 namespace sol {
 class Window;
@@ -72,6 +73,9 @@ public:
     uint16_t      height()  const { return m_h; }
     const Camera& camera()  const { return m_camera; }
 
+    RenderSettings&       settings()       { return m_settings; }
+    const RenderSettings& settings() const { return m_settings; }
+
 protected:
     void clear_lights_() { m_lights.clear(); }
     void clear_sky_()    { m_has_sky = false; }
@@ -82,6 +86,7 @@ protected:
     Camera             m_camera  {};
     glm::vec3          m_ambient {0.05f, 0.05f, 0.08f};
     std::vector<Light> m_lights;
+    RenderSettings     m_settings;
 
     glm::vec3 m_sky_sun_dir   {0.0f, 1.0f, 0.0f};
     glm::vec3 m_sky_zenith    {0.08f, 0.15f, 0.40f};

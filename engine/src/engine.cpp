@@ -2,7 +2,7 @@
 #include "sol/log.h"
 
 #include "platform/window.h"
-#include "render/bgfx_renderer.h"
+#include "render/vk/vk_renderer.h"
 #include "physics/physics.h"
 #include "ui/imgui_layer.h"
 #include "asset/gltf_loader.h"
@@ -10,8 +10,6 @@
 #include "sol/scene/scene_manager.h"
 
 #include <GLFW/glfw3.h>
-#include <bgfx/bgfx.h>
-#include <bx/timer.h>
 
 #include <Jolt/Jolt.h>
 #include <Jolt/Physics/PhysicsSystem.h>
@@ -23,6 +21,7 @@
 #include <imgui.h>
 
 #include <glm/gtc/matrix_transform.hpp>
+#include <chrono>
 
 namespace sol {
 
@@ -32,7 +31,7 @@ Engine::~Engine() { shutdown(); }
 bool Engine::init(const EngineConfig& cfg) {
     m_cfg     = cfg;
     m_window  = std::make_unique<Window>();
-    if (!m_renderer) m_renderer = std::make_unique<BgfxRenderer>(); // default backend
+    if (!m_renderer) m_renderer = std::make_unique<VulkanRenderer>();
     m_physics = std::make_unique<PhysicsWorld>();
     m_imgui   = std::make_unique<ImGuiLayer>();
     m_assets  = std::make_unique<GltfLoader>();
@@ -47,6 +46,44 @@ bool Engine::init(const EngineConfig& cfg) {
     SOL_INFO("Engine initialized");
     return true;
 }
+
+bool Engine::init_for_editor(void* hwnd, void* hinstance, int w, int h) {
+    m_cfg = {};
+    m_window.reset();
+    m_imgui.reset();
+
+    auto vk = std::make_unique<VulkanRenderer>();
+    if (!vk->init_win32(hwnd, hinstance, w, h)) return false;
+    m_renderer = std::move(vk);
+
+    m_physics = std::make_unique<PhysicsWorld>();
+    if (!m_physics->init()) return false;
+    m_assets = std::make_unique<GltfLoader>();
+    m_scene_manager = std::make_unique<SceneManager>();
+    m_imgui = std::make_unique<ImGuiLayer>();
+    if (!m_imgui->init_editor()) {
+        SOL_WARN("ImGui editor init failed — gizmo disabled");
+        m_imgui.reset();
+    }
+
+    m_running = true;
+    SOL_INFO("Engine initialized (editor mode)");
+    return true;
+}
+
+void Engine::tick_one_frame(float dt,
+                            std::function<void()> on_update,
+                            std::function<void()> on_render) {
+    if (!m_running) return;
+    m_dt = dt;
+    m_scene_manager->flush_pending(*this);
+    if (on_update) on_update();
+    m_physics->step(m_dt);
+    m_renderer->begin_frame();
+    if (on_render) on_render();
+    m_renderer->end_frame();
+}
+
 
 void Engine::shutdown() {
     if (m_imgui)    m_imgui->shutdown();
@@ -72,22 +109,24 @@ int Engine::run(const SolGameApi& game) {
     SOL_INFO(std::string("Loaded game: ") + (game.name ? game.name : "?"));
 
     if (game.on_init) game.on_init(this);
-
-    // DXGI swap chain creation during bgfx::init can pump Win32 messages and
-    // leave a stale WM_CLOSE in the queue before our loop starts. Reset the
-    // flag so the window stays open as intended.
     glfwSetWindowShouldClose(m_window->handle(), GLFW_FALSE);
     SOL_INFO("Entering main loop");
 
-    int64_t last = bx::getHPCounter();
-    const double freq = (double)bx::getHPFrequency();
+    auto last = std::chrono::steady_clock::now();
 
     while (m_running && !m_window->should_close()) {
-        const int64_t now = bx::getHPCounter();
-        m_dt = float((now - last) / freq);
+        const auto now = std::chrono::steady_clock::now();
+        m_dt = std::chrono::duration<float>(now - last).count();
         last = now;
 
         m_window->poll();
+        if (m_window->width() > 0 && m_window->height() > 0 &&
+            (m_renderer->width() != m_window->width() || m_renderer->height() != m_window->height())) {
+            m_renderer->resize(m_window->width(), m_window->height());
+        }
+        // Apply any deferred scene swap requested from on_update / on_ready.
+        m_scene_manager->flush_pending(*this);
+
         m_imgui->begin_frame();
         if (game.on_update) game.on_update(this, m_dt);
         m_physics->step(m_dt);
@@ -124,8 +163,11 @@ bool Engine::self_test() {
     SOL_INFO("  [ok] GLM");
 
     // 3. bgfx — already inited; check renderer type is valid.
-    auto rt = bgfx::getRendererType();
-    SOL_INFO(std::string("  [ok] bgfx renderer: ") + bgfx::getRendererName(rt));
+    if (!dynamic_cast<VulkanRenderer*>(m_renderer.get())) {
+        SOL_ERROR("Renderer self-test failed");
+        return false;
+    }
+    SOL_INFO("  [ok] Vulkan renderer");
 
     // 4. Physics — drop a sphere onto a static box, step a few frames.
     using namespace JPH;

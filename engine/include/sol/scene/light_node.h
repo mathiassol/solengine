@@ -9,6 +9,7 @@ public:
     glm::vec3 color       {1.0f, 1.0f, 1.0f};
     float     intensity   = 1.0f;
     bool      cast_shadow = true; // shadows on by default for scene lights
+    int       shadow_mode = 1;    // 0=None  1=PCF  2=PCSS  3=VSM
 
     const char* type_name() const override { return "DirectionalLight"; }
     glm::vec3 world_direction() const { return forward(); }

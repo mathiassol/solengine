@@ -1,0 +1,150 @@
+{
+  "sol_scene": 1,
+  "name": "OutdoorDay",
+  "root": {
+    "type": "Node3D",
+    "name": "OutdoorDay",
+    "children": [
+
+      {
+        "type": "DirectionalLight",
+        "name": "Sun",
+        "rotation": [-38.0, 45.0, 0.0],
+        "color": [1.0, 0.94, 0.80],
+        "intensity": 5.0,
+        "cast_shadow": true,
+        "shadow_mode": 1
+      },
+
+      {
+        "type": "MeshNode",
+        "name": "Ground",
+        "position": [0.0, -0.1, 0.0],
+        "scale": [80.0, 0.2, 80.0],
+        "mesh": "cube",
+        "material": {
+          "base_color": [0.46, 0.40, 0.33, 1.0],
+          "roughness": 0.92,
+          "metallic": 0.0,
+          "lit": true
+        }
+      },
+
+      {
+        "type": "MeshNode",
+        "name": "Pillar",
+        "position": [0.0, 3.0, -4.0],
+        "scale": [1.2, 6.0, 1.2],
+        "mesh": "cube",
+        "material": {
+          "base_color": [0.72, 0.70, 0.68, 1.0],
+          "roughness": 0.65,
+          "metallic": 0.0,
+          "lit": true
+        }
+      },
+
+      {
+        "type": "MeshNode",
+        "name": "MetalSphere",
+        "position": [4.5, 1.1, 1.0],
+        "scale": [2.2, 2.2, 2.2],
+        "mesh": "sphere",
+        "material": {
+          "base_color": [0.85, 0.80, 0.75, 1.0],
+          "roughness": 0.08,
+          "metallic": 1.0,
+          "lit": true
+        }
+      },
+
+      {
+        "type": "MeshNode",
+        "name": "ClayBall",
+        "position": [-4.0, 1.1, 0.5],
+        "scale": [2.2, 2.2, 2.2],
+        "mesh": "sphere",
+        "material": {
+          "base_color": [0.72, 0.28, 0.18, 1.0],
+          "roughness": 0.88,
+          "metallic": 0.0,
+          "lit": true
+        }
+      },
+
+      {
+        "type": "MeshNode",
+        "name": "BoxA",
+        "position": [7.0, 0.75, -3.0],
+        "rotation": [0.0, 22.0, 0.0],
+        "scale": [2.0, 1.5, 2.5],
+        "mesh": "cube",
+        "material": {
+          "base_color": [0.52, 0.44, 0.36, 1.0],
+          "roughness": 0.82,
+          "metallic": 0.0,
+          "lit": true
+        }
+      },
+
+      {
+        "type": "MeshNode",
+        "name": "BoxB",
+        "position": [-6.0, 0.6, -5.0],
+        "rotation": [0.0, -14.0, 0.0],
+        "scale": [2.5, 1.2, 1.8],
+        "mesh": "cube",
+        "material": {
+          "base_color": [0.38, 0.46, 0.42, 1.0],
+          "roughness": 0.78,
+          "metallic": 0.0,
+          "lit": true
+        }
+      },
+
+      {
+        "type": "MeshNode",
+        "name": "BoxC",
+        "position": [2.0, 0.5, 6.0],
+        "rotation": [0.0, 35.0, 0.0],
+        "scale": [1.5, 1.0, 1.5],
+        "mesh": "cube",
+        "material": {
+          "base_color": [0.55, 0.50, 0.40, 1.0],
+          "roughness": 0.75,
+          "metallic": 0.0,
+          "lit": true
+        }
+      },
+
+      {
+        "type": "MeshNode",
+        "name": "SmallRockA",
+        "position": [-2.0, 0.3, 7.0],
+        "scale": [0.6, 0.6, 0.6],
+        "mesh": "sphere",
+        "material": {
+          "base_color": [0.48, 0.44, 0.40, 1.0],
+          "roughness": 0.95,
+          "metallic": 0.0,
+          "lit": true
+        }
+      },
+
+      {
+        "type": "MeshNode",
+        "name": "SmallRockB",
+        "position": [9.0, 0.25, 4.0],
+        "scale": [0.5, 0.5, 0.5],
+        "mesh": "sphere",
+        "material": {
+          "base_color": [0.50, 0.46, 0.42, 1.0],
+          "roughness": 0.95,
+          "metallic": 0.0,
+          "lit": true
+        }
+      }
+
+    ]
+  }
+}

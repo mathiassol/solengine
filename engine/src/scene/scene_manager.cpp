@@ -22,6 +22,17 @@ void SceneManager::set_scene(std::unique_ptr<Scene> scene, Engine& engine) {
     if (m_scene) m_scene->on_ready(engine);
 }
 
+void SceneManager::request_scene(std::unique_ptr<Scene> scene) {
+    // Deferred swap — applied at the top of the next frame via flush_pending().
+    // Safe to call from within on_update / on_ready without use-after-free.
+    m_pending_scene = std::move(scene);
+}
+
+void SceneManager::flush_pending(Engine& engine) {
+    if (m_pending_scene)
+        set_scene(std::move(m_pending_scene), engine);
+}
+
 void SceneManager::update(Engine& engine, float dt) {
     if (m_scene) m_scene->update(engine, dt);
 }

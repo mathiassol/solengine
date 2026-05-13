@@ -31,15 +31,13 @@ public:
         return create(verts.data(), verts.size(), indices.data(), indices.size());
     }
 
-    bool     valid()        const { return m_index_count > 0; }
+    bool     valid()        const { return m_gpu != nullptr; }
     uint32_t index_count()  const { return m_index_count; }
     uint32_t vertex_count() const { return m_vertex_count; }
-    uint16_t vbh_idx()      const { return m_vbh_idx; }
-    uint16_t ibh_idx()      const { return m_ibh_idx; }
+    void*    gpu_data()     const { return m_gpu; }
 
 private:
-    uint16_t m_vbh_idx      = 0xffff;
-    uint16_t m_ibh_idx      = 0xffff;
+    void*    m_gpu          = nullptr;
     uint32_t m_vertex_count = 0;
     uint32_t m_index_count  = 0;
     void destroy_();

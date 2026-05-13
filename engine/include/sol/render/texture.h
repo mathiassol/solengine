@@ -22,13 +22,13 @@ public:
     // Create from raw RGBA8 pixels (row-major, no row padding).
     static Texture from_rgba8(const void* pixels, int width, int height);
 
-    bool     valid()  const { return m_handle_idx != 0xffff; }
-    uint16_t handle_idx() const { return m_handle_idx; }
+    bool     valid()  const { return m_gpu != nullptr; }
+    void*    gpu_data() const { return m_gpu; }
     int      width()  const { return m_w; }
     int      height() const { return m_h; }
 
 private:
-    uint16_t m_handle_idx = 0xffff;
+    void*    m_gpu = nullptr;
     int      m_w = 0, m_h = 0;
 
     void destroy_();

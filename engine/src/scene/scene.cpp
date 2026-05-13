@@ -9,23 +9,88 @@
 #include "sol/scene/character_body3d.h"
 #include "sol/scene/scene_instance.h"
 #include "sol/scene/model_node.h"
+#include "sol/scene/fly_cam_controller.h"
 #include "asset/gltf_loader.h"
+
+#include <Jolt/Jolt.h>
+#include <Jolt/Physics/PhysicsSystem.h>
+#include <Jolt/Physics/Collision/Shape/BoxShape.h>
+#include <Jolt/Physics/Body/BodyCreationSettings.h>
+#include <Jolt/Physics/Body/BodyInterface.h>
 
 #include "sol/engine.h"
 #include "sol/log.h"
+#include "physics/physics.h"
 #include "sol/render/renderer.h"
 #include "sol/render/mesh.h"
 #include "sol/render/material.h"
 #include "sol/render/light.h"
+#include "sol/reflect.h"
+
+using AlphaMode = sol::AlphaMode;
 
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <functional>
 #include <stdexcept>
 
+// ---------------------------------------------------------------------------
+// Reflection registrations for built-in node types
+// ---------------------------------------------------------------------------
+
+SOL_REFLECT_BEGIN(Node3D)
+    SOL_FIELD(position, sol::FieldType::Vec3)
+    SOL_FIELD(rotation, sol::FieldType::Vec3)
+    SOL_FIELD(scale,    sol::FieldType::Vec3)
+SOL_REFLECT_END()
+
+SOL_REFLECT_BEGIN(Camera3D)
+    SOL_FIELD(position,  sol::FieldType::Vec3)
+    SOL_FIELD(rotation,  sol::FieldType::Vec3)
+    SOL_FIELD(scale,     sol::FieldType::Vec3)
+    SOL_FIELD(fov,       sol::FieldType::Float)
+    SOL_FIELD(near_clip, sol::FieldType::Float)
+    SOL_FIELD(far_clip,  sol::FieldType::Float)
+    SOL_FIELD(current,   sol::FieldType::Bool)
+SOL_REFLECT_END()
+
+SOL_REFLECT_BEGIN(DirectionalLight)
+    SOL_FIELD(position,     sol::FieldType::Vec3)
+    SOL_FIELD(rotation,     sol::FieldType::Vec3)
+    SOL_FIELD(color,        sol::FieldType::Color3)
+    SOL_FIELD(intensity,    sol::FieldType::Float)
+    SOL_FIELD(cast_shadow,  sol::FieldType::Bool)
+    SOL_FIELD(shadow_mode,  sol::FieldType::Int)
+SOL_REFLECT_END()
+
+SOL_REFLECT_BEGIN(PointLight)
+    SOL_FIELD(position,  sol::FieldType::Vec3)
+    SOL_FIELD(color,     sol::FieldType::Color3)
+    SOL_FIELD(intensity, sol::FieldType::Float)
+    SOL_FIELD(range,     sol::FieldType::Float)
+SOL_REFLECT_END()
+
+SOL_REFLECT_BEGIN(ModelNode)
+    SOL_FIELD(position, sol::FieldType::Vec3)
+    SOL_FIELD(rotation, sol::FieldType::Vec3)
+    SOL_FIELD(scale,    sol::FieldType::Vec3)
+    SOL_FIELD(path,     sol::FieldType::AssetPath)
+SOL_REFLECT_END()
+
+SOL_REFLECT_BEGIN(MeshNode)
+    SOL_FIELD(position,          sol::FieldType::Vec3)
+    SOL_FIELD(rotation,          sol::FieldType::Vec3)
+    SOL_FIELD(scale,             sol::FieldType::Vec3)
+    SOL_FIELD(mesh_name,         sol::FieldType::String)
+    SOL_FIELD(mesh_path,         sol::FieldType::AssetPath)
+    SOL_FIELD(collision_enabled, sol::FieldType::Bool)
+SOL_REFLECT_END()
+
 using json = nlohmann::json;
 
 namespace sol {
+
+static constexpr JPH::ObjectLayer LAYER_NON_MOVING = 0;
 
 // ============================================================
 //  Node base
@@ -48,23 +113,133 @@ Node* Node::find(const std::string& n) const {
 //  MeshNode
 // ============================================================
 
-void MeshNode::on_ready(Engine& /*engine*/) {
-    Mesh raw_mesh;
-    if      (mesh_name == "cube")   raw_mesh = primitives::make_cube();
-    else if (mesh_name == "sphere") raw_mesh = primitives::make_sphere();
-    else if (mesh_name == "plane")  raw_mesh = primitives::make_plane();
-    else if (mesh_name == "capsule")
-        raw_mesh = primitives::make_sphere(0.35f, 16, 12);
-    else {
-        SOL_WARN("MeshNode '" + name + "': unknown mesh '" + mesh_name + "', using cube");
-        raw_mesh = primitives::make_cube();
+void MeshNode::on_ready(Engine& engine) {
+    if (!m_body_ids.empty())
+        on_destroy(engine);
+
+    m_mesh.reset();
+    m_submeshes.clear();
+    m_model_ref.reset();
+
+    if (!mesh_path.empty()) {
+        auto model = engine.assets().load(mesh_path);
+        if (!model) {
+            SOL_ERROR("MeshNode '" + name + "': failed to load '" + mesh_path + "'");
+        } else {
+            m_model_ref = model;
+            m_submeshes.reserve(model->meshes.size());
+
+            for (const auto& gm : model->meshes) {
+                if (gm.vertices.empty() || gm.indices.empty()) continue;
+
+                std::vector<Vertex> verts;
+                verts.reserve(gm.vertices.size());
+                for (const auto& mv : gm.vertices) {
+                    Vertex v;
+                    v.position = mv.position;
+                    v.normal   = mv.normal;
+                    v.uv       = mv.uv;
+                    v.color    = 0xffffffff;
+                    v.tangent  = mv.tangent;
+                    verts.push_back(v);
+                }
+
+                auto mesh = std::make_shared<Mesh>(
+                    Mesh::create(verts.data(), verts.size(),
+                                 gm.indices.data(), gm.indices.size()));
+                if (!mesh->valid()) continue;
+
+                Material mat;
+                mat.base_color   = gm.base_color;
+                mat.metallic     = gm.metallic;
+                mat.roughness    = gm.roughness;
+                mat.emissive     = gm.emissive;
+                mat.double_sided = gm.double_sided;
+                if (gm.albedo_tex >= 0 && gm.albedo_tex < (int)model->textures.size())
+                    mat.albedo = &model->textures[gm.albedo_tex];
+                if (gm.normal_tex >= 0 && gm.normal_tex < (int)model->textures.size())
+                    mat.normal_map = &model->textures[gm.normal_tex];
+                if (gm.mr_tex >= 0 && gm.mr_tex < (int)model->textures.size())
+                    mat.mr_map = &model->textures[gm.mr_tex];
+                if (gm.emissive_tex >= 0 && gm.emissive_tex < (int)model->textures.size())
+                    mat.emissive_tex = &model->textures[gm.emissive_tex];
+                mat.alpha_mode   = static_cast<AlphaMode>(gm.alpha_mode);
+                mat.alpha_cutoff = gm.alpha_cutoff;
+
+                m_submeshes.push_back({std::move(mesh), mat, gm.node_transform});
+            }
+
+            SOL_INFO("MeshNode '" + name + "': loaded "
+                     + std::to_string(m_submeshes.size()) + " submeshes");
+        }
+    } else {
+        Mesh raw_mesh;
+        if      (mesh_name == "cube")   raw_mesh = primitives::make_cube();
+        else if (mesh_name == "sphere") raw_mesh = primitives::make_sphere();
+        else if (mesh_name == "plane")  raw_mesh = primitives::make_plane();
+        else if (mesh_name == "capsule")
+            raw_mesh = primitives::make_sphere(0.35f, 16, 12);
+        else {
+            SOL_WARN("MeshNode '" + name + "': unknown mesh '" + mesh_name + "', using cube");
+            raw_mesh = primitives::make_cube();
+        }
+        m_mesh = std::make_shared<Mesh>(std::move(raw_mesh));
     }
-    m_mesh = std::make_shared<Mesh>(std::move(raw_mesh));
+
+    if (!collision_enabled) return;
+
+    auto* ps = engine.physics().system();
+    if (!ps) return;
+
+    const glm::mat4 world = global_transform();
+    const glm::vec3 pos = glm::vec3(world[3]);
+    const glm::vec3 half_extents = glm::abs(scale) * 0.5f;
+
+    JPH::BoxShapeSettings shape_settings(JPH::Vec3(half_extents.x, half_extents.y, half_extents.z));
+    auto shape_result = shape_settings.Create();
+    if (!shape_result.IsValid()) return;
+
+    JPH::BodyInterface& bi = ps->GetBodyInterface();
+    JPH::BodyCreationSettings settings(
+        shape_result.Get(),
+        JPH::Vec3(pos.x, pos.y, pos.z),
+        JPH::Quat::sIdentity(),
+        JPH::EMotionType::Static,
+        LAYER_NON_MOVING);
+
+    JPH::Body* body = bi.CreateBody(settings);
+    if (!body) return;
+
+    bi.AddBody(body->GetID(), JPH::EActivation::DontActivate);
+    m_body_ids.push_back(body->GetID().GetIndexAndSequenceNumber());
 }
 
 void MeshNode::on_render(Engine& engine, const glm::mat4& world_xform) {
+    if (!m_submeshes.empty()) {
+        for (const auto& sm : m_submeshes)
+            engine.renderer().submit(*sm.mesh, sm.mat, world_xform * sm.node_xform);
+        return;
+    }
+
     if (m_mesh && m_mesh->valid())
         engine.renderer().submit(*m_mesh, material, world_xform);
+}
+
+void MeshNode::on_destroy(Engine& engine) {
+    auto* ps = engine.physics().system();
+    if (ps) {
+        JPH::BodyInterface& bi = ps->GetBodyInterface();
+        for (uint32_t raw : m_body_ids) {
+            JPH::BodyID id(raw);
+            bi.RemoveBody(id);
+            bi.DestroyBody(id);
+        }
+    }
+
+    m_body_ids.clear();
+    m_submeshes.clear();
+    m_model_ref.reset();
+    m_mesh.reset();
 }
 
 // ============================================================
@@ -118,6 +293,10 @@ void ModelNode::on_ready(Engine& engine) {
             mat.normal_map = &model->textures[gm.normal_tex];
         if (gm.mr_tex >= 0 && gm.mr_tex < (int)model->textures.size())
             mat.mr_map = &model->textures[gm.mr_tex];
+        if (gm.emissive_tex >= 0 && gm.emissive_tex < (int)model->textures.size())
+            mat.emissive_tex = &model->textures[gm.emissive_tex];
+        mat.alpha_mode   = static_cast<AlphaMode>(gm.alpha_mode);
+        mat.alpha_cutoff = gm.alpha_cutoff;
 
         m_submeshes.push_back({std::move(mesh), mat, gm.node_transform});
     }
@@ -202,10 +381,14 @@ static std::unique_ptr<Node> node_from_json(const json& j) {
         auto n = std::make_unique<MeshNode>();
         read_node3d(n.get());
         n->mesh_name = j.value("mesh", "cube");
+        n->mesh_path = j.value("mesh_path", "");
+        n->collision_enabled = j.value("collision_enabled", true);
         if (j.contains("material")) {
             const auto& m = j["material"];
             if (m.contains("base_color"))
                 n->material.base_color = vec4_from_json(m["base_color"]);
+            n->material.metallic     = m.value("metallic",     0.0f);
+            n->material.roughness    = m.value("roughness",    0.5f);
             n->material.lit          = m.value("lit", true);
             n->material.double_sided = m.value("double_sided", false);
         }
@@ -222,7 +405,9 @@ static std::unique_ptr<Node> node_from_json(const json& j) {
         auto n = std::make_unique<DirectionalLight>();
         read_node3d(n.get());
         if (j.contains("color")) n->color = vec3_from_json(j["color"], {1,1,1});
-        n->intensity = j.value("intensity", 1.0f);
+        n->intensity    = j.value("intensity",    1.0f);
+        n->cast_shadow  = j.value("cast_shadow",  n->cast_shadow);
+        n->shadow_mode  = j.value("shadow_mode",  n->shadow_mode);
         node = std::move(n);
     } else if (type == "PointLight") {
         auto n = std::make_unique<PointLight>();
@@ -262,6 +447,24 @@ static std::unique_ptr<Node> node_from_json(const json& j) {
         read_node3d(n.get());
         n->path = j.value("path", "");
         node = std::move(n);
+    } else if (type == "FlyCamController") {
+        auto n = std::make_unique<FlyCamController>();
+        read_node3d(n.get());
+        n->yaw          = j.value("yaw",           n->yaw);
+        n->pitch        = j.value("pitch",         n->pitch);
+        n->move_speed   = j.value("move_speed",    n->move_speed);
+        n->mouse_sens   = j.value("mouse_sens",    n->mouse_sens);
+        n->key_look_spd = j.value("key_look_spd",  n->key_look_spd);
+        n->fov          = j.value("fov",           n->fov);
+        n->near_clip    = j.value("near_clip",     n->near_clip);
+        n->far_clip     = j.value("far_clip",      n->far_clip);
+        n->models_dir   = j.value("models_dir",    n->models_dir);
+        n->show_ui      = j.value("show_ui",       n->show_ui);
+        if (j.contains("extra_scenes") && j["extra_scenes"].is_array()) {
+            for (const auto& s : j["extra_scenes"])
+                n->extra_scenes.push_back(s.get<std::string>());
+        }
+        node = std::move(n);
     } else {
         // Generic Node3D (or unknown type — treat as Node3D)
         auto n = std::make_unique<Node3D>();
@@ -296,8 +499,13 @@ static json node_to_json(const Node* node) {
 
     if (const auto* n = dynamic_cast<const MeshNode*>(node)) {
         j["mesh"] = n->mesh_name;
+        if (!n->mesh_path.empty())
+            j["mesh_path"] = n->mesh_path;
+        j["collision_enabled"] = n->collision_enabled;
         json m;
         m["base_color"]   = vec4_to_json(n->material.base_color);
+        m["metallic"]     = n->material.metallic;
+        m["roughness"]    = n->material.roughness;
         m["lit"]          = n->material.lit;
         m["double_sided"] = n->material.double_sided;
         j["material"] = m;
@@ -307,8 +515,9 @@ static json node_to_json(const Node* node) {
         j["far"]     = n->far_clip;
         j["current"] = n->current;
     } else if (const auto* n = dynamic_cast<const DirectionalLight*>(node)) {
-        j["color"]     = vec3_to_json(n->color);
-        j["intensity"] = n->intensity;
+        j["color"]        = vec3_to_json(n->color);
+        j["intensity"]    = n->intensity;
+        j["cast_shadow"]  = n->cast_shadow;
     } else if (const auto* n = dynamic_cast<const PointLight*>(node)) {
         j["color"]     = vec3_to_json(n->color);
         j["intensity"] = n->intensity;
@@ -329,6 +538,22 @@ static json node_to_json(const Node* node) {
         j["scene"] = n->scene_path;
     } else if (const auto* mn = dynamic_cast<const ModelNode*>(node)) {
         j["path"] = mn->path;
+    } else if (const auto* fc = dynamic_cast<const FlyCamController*>(node)) {
+        j["yaw"]          = fc->yaw;
+        j["pitch"]        = fc->pitch;
+        j["move_speed"]   = fc->move_speed;
+        j["mouse_sens"]   = fc->mouse_sens;
+        j["key_look_spd"] = fc->key_look_spd;
+        j["fov"]          = fc->fov;
+        j["near_clip"]    = fc->near_clip;
+        j["far_clip"]     = fc->far_clip;
+        j["models_dir"]   = fc->models_dir;
+        j["show_ui"]      = fc->show_ui;
+        if (!fc->extra_scenes.empty()) {
+            json arr = json::array();
+            for (const auto& s : fc->extra_scenes) arr.push_back(s);
+            j["extra_scenes"] = arr;
+        }
     }
 
     if (!node->children().empty()) {
@@ -418,6 +643,7 @@ void Scene::render(Engine& engine) {
             l.color = dl->color;
             l.intensity = dl->intensity;
             l.cast_shadow = dl->cast_shadow;
+            l.shadow_mode = dl->shadow_mode;
             engine.renderer().submit_light(l);
 
             // Drive skybox from the directional light (toward_sun = -shining direction)

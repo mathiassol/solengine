@@ -15,8 +15,15 @@ public:
     // Load a scene from disk and make it current (calls on_ready).
     bool load_scene(const std::string& path, Engine& engine);
 
-    // Replace current scene with an already-constructed scene.
+    // Replace current scene with an already-constructed scene (immediate).
     void set_scene(std::unique_ptr<Scene> scene, Engine& engine);
+
+    // Queue a scene swap to happen at the start of the next frame.
+    // Safe to call from inside on_update / on_ready — avoids use-after-free.
+    void request_scene(std::unique_ptr<Scene> scene);
+
+    // Apply any pending scene swap. Called by the engine at the top of each frame.
+    void flush_pending(Engine& engine);
 
     // Returns the active scene (may be null before first load).
     Scene* current() const { return m_scene.get(); }
@@ -32,6 +39,7 @@ public:
 
 private:
     std::unique_ptr<Scene> m_scene;
+    std::unique_ptr<Scene> m_pending_scene;
 };
 
 } // namespace sol

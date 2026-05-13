@@ -1,0 +1,133 @@
+{
+  "sol_scene": 1,
+  "name": "Sunset",
+  "root": {
+    "type": "Node3D",
+    "name": "Sunset",
+    "children": [
+
+      {
+        "type": "DirectionalLight",
+        "name": "Sun",
+        "rotation": [-6.0, 25.0, 0.0],
+        "color": [1.0, 0.48, 0.12],
+        "intensity": 3.5,
+        "cast_shadow": true,
+        "shadow_mode": 1
+      },
+
+      {
+        "type": "MeshNode",
+        "name": "Ground",
+        "position": [0.0, -0.1, 0.0],
+        "scale": [100.0, 0.2, 100.0],
+        "mesh": "cube",
+        "material": {
+          "base_color": [0.52, 0.42, 0.30, 1.0],
+          "roughness": 0.90,
+          "metallic": 0.0,
+          "lit": true
+        }
+      },
+
+      {
+        "type": "MeshNode",
+        "name": "TowerA",
+        "position": [0.0, 5.0, -8.0],
+        "scale": [1.5, 10.0, 1.5],
+        "mesh": "cube",
+        "material": {
+          "base_color": [0.62, 0.58, 0.52, 1.0],
+          "roughness": 0.70,
+          "metallic": 0.0,
+          "lit": true
+        }
+      },
+
+      {
+        "type": "MeshNode",
+        "name": "TowerB",
+        "position": [6.0, 4.0, -5.0],
+        "scale": [1.2, 8.0, 1.2],
+        "mesh": "cube",
+        "material": {
+          "base_color": [0.60, 0.56, 0.50, 1.0],
+          "roughness": 0.70,
+          "metallic": 0.0,
+          "lit": true
+        }
+      },
+
+      {
+        "type": "MeshNode",
+        "name": "TowerC",
+        "position": [-7.0, 3.0, -3.0],
+        "scale": [1.0, 6.0, 1.0],
+        "mesh": "cube",
+        "material": {
+          "base_color": [0.58, 0.54, 0.48, 1.0],
+          "roughness": 0.70,
+          "metallic": 0.0,
+          "lit": true
+        }
+      },
+
+      {
+        "type": "MeshNode",
+        "name": "MetalOrb",
+        "position": [0.0, 1.1, 2.0],
+        "scale": [2.2, 2.2, 2.2],
+        "mesh": "sphere",
+        "material": {
+          "base_color": [0.90, 0.86, 0.80, 1.0],
+          "roughness": 0.05,
+          "metallic": 1.0,
+          "lit": true
+        }
+      },
+
+      {
+        "type": "MeshNode",
+        "name": "WallSlab",
+        "position": [-10.0, 1.5, 0.0],
+        "scale": [0.4, 3.0, 18.0],
+        "mesh": "cube",
+        "material": {
+          "base_color": [0.58, 0.54, 0.50, 1.0],
+          "roughness": 0.75,
+          "metallic": 0.0,
+          "lit": true
+        }
+      },
+
+      {
+        "type": "MeshNode",
+        "name": "PlatformA",
+        "position": [5.0, 0.25, 5.0],
+        "scale": [4.0, 0.5, 4.0],
+        "mesh": "cube",
+        "material": {
+          "base_color": [0.55, 0.50, 0.44, 1.0],
+          "roughness": 0.80,
+          "metallic": 0.0,
+          "lit": true
+        }
+      },
+
+      {
+        "type": "MeshNode",
+        "name": "RockSphere",
+        "position": [-3.5, 0.5, 4.0],
+        "scale": [1.0, 1.0, 1.0],
+        "mesh": "sphere",
+        "material": {
+          "base_color": [0.48, 0.42, 0.36, 1.0],
+          "roughness": 0.92,
+          "metallic": 0.0,
+          "lit": true
+        }
+      }
+
+    ]
+  }
+}

@@ -28,6 +28,8 @@ struct GltfMesh {
     int                     normal_tex   = -1;
     int                     mr_tex       = -1;
     int                     emissive_tex = -1;
+    int                     alpha_mode   = 0;   // 0=opaque, 1=mask, 2=blend (cgltf_alpha_mode)
+    float                   alpha_cutoff = 0.5f;
 };
 
 struct GltfModel {

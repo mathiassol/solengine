@@ -20,6 +20,7 @@ struct SOL_API Light {
     float     inner_angle  = 20.0f;              // Spot inner cone half-angle (degrees)
     float     outer_angle  = 35.0f;              // Spot outer cone half-angle (degrees)
     bool      cast_shadow  = false;              // only first directional with cast_shadow=true gets shadow map
+    int       shadow_mode  = 1;                  // 0=None  1=PCF  2=PCSS  3=VSM
 };
 
 } // namespace sol

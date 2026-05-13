@@ -474,6 +474,8 @@ void BgfxRenderer::resize(int w, int h) {
 void BgfxRenderer::begin_frame() {
     clear_lights_();
     clear_sky_();
+    m_render_started = false;
+    m_has_shadow     = false;
 
     const bool homogeneous = bgfx::getCaps()->homogeneousDepth;
     const float aspect = m_h > 0 ? (float)m_w / (float)m_h : 1.0f;
@@ -659,44 +661,43 @@ static glm::mat4 build_shadow_matrix(const glm::vec3& toLightDir,
 void BgfxRenderer::submit(const Mesh& mesh, const Material& mat, const glm::mat4& transform) {
     if (!m_initialized || !mesh.valid() || m_pbr_prog == 0xffff) return;
 
-    const bool  homogeneous = bgfx::getCaps()->homogeneousDepth;
-    const bool  originBL    = bgfx::getCaps()->originBottomLeft;
+    const bool homogeneous = bgfx::getCaps()->homogeneousDepth;
+    const bool originBL    = bgfx::getCaps()->originBottomLeft;
 
-    // --- Locate first shadow-casting directional light ---
-    const Light* shadowLight = nullptr;
-    for (const auto& lt : m_lights) {
-        if (lt.type == LightType::Directional && lt.cast_shadow) {
-            shadowLight = &lt;
-            break;
+    // =====================================================
+    // ONE-SHOT PER FRAME: find shadow light, compute matrix
+    // =====================================================
+    if (!m_render_started) {
+        m_render_started = true;
+        for (const auto& lt : m_lights) {
+            if (lt.type == LightType::Directional && lt.cast_shadow) {
+                glm::vec3 ld   = glm::normalize(lt.direction);
+                glm::vec3 lpos = m_camera.position - ld * 100.0f;
+                glm::vec3 up   = (std::abs(ld.y) > 0.99f)
+                                 ? glm::vec3(1,0,0) : glm::vec3(0,1,0);
+
+                float bxLV[16], bxLP[16];
+                bx::mtxLookAt(bxLV,
+                    {lpos.x, lpos.y, lpos.z},
+                    {m_camera.position.x, m_camera.position.y, m_camera.position.z},
+                    {up.x, up.y, up.z});
+                bx::mtxOrtho(bxLP, -40.0f, 40.0f, -40.0f, 40.0f,
+                              0.0f, 200.0f, 0.0f, homogeneous);
+                bgfx::setViewTransform(VIEW_SHADOW, bxLV, bxLP);
+
+                m_light_mtx  = build_shadow_matrix(ld, m_camera.position,
+                                                   homogeneous, originBL,
+                                                   40.0f, 200.0f);
+                m_has_shadow = true;
+                break;
+            }
         }
-    }
-
-    // Rebuild shadow view-proj whenever we have a shadow light
-    if (shadowLight) {
-        glm::mat4 newLightMtx = build_shadow_matrix(
-            glm::normalize(shadowLight->direction),
-            m_camera.position,
-            homogeneous, originBL, 40.0f, 200.0f);
-
-        // Also set the VIEW_SHADOW transform so depth is written correctly
-        float bxLV[16], bxLP[16];
-        glm::vec3 ld = glm::normalize(shadowLight->direction);
-        glm::vec3 lpos = m_camera.position - ld * 100.0f;
-        glm::vec3 up = (std::abs(ld.y) > 0.99f) ? glm::vec3(1,0,0) : glm::vec3(0,1,0);
-        bx::mtxLookAt(bxLV, {lpos.x,lpos.y,lpos.z},
-                      {m_camera.position.x,m_camera.position.y,m_camera.position.z},
-                      {up.x,up.y,up.z});
-        bx::mtxOrtho(bxLP, -40.0f,40.0f,-40.0f,40.0f, 0.0f,200.0f,0.0f,homogeneous);
-        bgfx::setViewTransform(VIEW_SHADOW, bxLV, bxLP);
-
-        m_light_mtx  = newLightMtx;
-        m_has_shadow = true;
     }
 
     // =====================================================
     // SHADOW PASS (view 0)
     // =====================================================
-    if (shadowLight) {
+    if (m_has_shadow) {
         bgfx::setTransform(&transform[0][0]);
         bgfx::setVertexBuffer(0, bgfx::VertexBufferHandle{mesh.vbh_idx()});
         bgfx::setIndexBuffer(     bgfx::IndexBufferHandle{mesh.ibh_idx()});

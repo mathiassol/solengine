@@ -5,16 +5,29 @@
     "name": "Root",
     "children": [
       {
-        "type": "ModelNode",
-        "name": "Model",
-        "path": "model.glb"
-      },
-      {
-        "type": "DirectionalLight",
-        "name": "Sun",
-        "rotation": [-45.0, 30.0, 0.0],
-        "intensity": 6.0,
-        "cast_shadow": true
+        "type": "FlyCamController",
+        "name": "Camera",
+        "position": [0.0, 1.5, 5.0],
+        "yaw": 180.0,
+        "pitch": -10.0,
+        "move_speed": 5.0,
+        "mouse_sens": 0.15,
+        "key_look_spd": 60.0,
+        "fov": 60.0,
+        "near_clip": 0.05,
+        "far_clip": 1000.0,
+        "models_dir": "",
+        "show_ui": true,
+        "extra_scenes": [
+          "scenes/room.solscene",
+          "scenes/outdoor_day.solscene",
+          "scenes/sunset.solscene",
+          "scenes/nightclub.solscene",
+          "scenes/pbr_studio.solscene",
+          "scenes/pcss_test.solscene",
+          "scenes/vsm_test.solscene",
+          "scenes/city.solscene"
+        ]
       }
     ]
   }
