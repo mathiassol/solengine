@@ -109,7 +109,7 @@ public:
                                          VkImageView history, VkSampler s_hist,
                                          VkImageView depth,   VkSampler s_depth);
 
-    void reset_pool(VkDevice device); // free all transient sets
+    void reset_pool(VkDevice device, uint32_t frame_idx); // free all transient sets for the given frame slot
 
 private:
     VkDescriptorSetLayout m_frame_layout      = VK_NULL_HANDLE;
@@ -119,7 +119,8 @@ private:
     VkDescriptorSetLayout m_deferred_layout   = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_ssao_input_layout = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_taa_input_layout  = VK_NULL_HANDLE;
-    VkDescriptorPool      m_pool              = VK_NULL_HANDLE;
+    std::array<VkDescriptorPool, 2> m_pools   = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    uint32_t              m_active_pool_idx   = 0u;
 };
 
 } // namespace sol::vk

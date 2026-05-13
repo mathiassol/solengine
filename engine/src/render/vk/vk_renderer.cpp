@@ -449,7 +449,7 @@ void VulkanRenderer::end_frame() {
         }
 
         auto& frame = m_swapchain.frame(m_frame_index);
-        m_desc.reset_pool(m_ctx.device());
+        m_desc.reset_pool(m_ctx.device(), m_frame_index);
 
         vk::FrameUBO ubo{};
         glm::vec3 shadow_dir{0.0f, -1.0f, 0.0f};
