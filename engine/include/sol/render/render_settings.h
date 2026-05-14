@@ -58,7 +58,7 @@ struct RenderSettings {
     // ---- TAA (Temporal Anti-Aliasing) -----------------------------------
     bool  taa_enabled        = true;
     float taa_blend          = 0.1f;    // blend weight toward current frame (0.05=smooth, 0.5=responsive)
-    float taa_variance_gamma = 1.25f;   // neighborhood AABB expansion (higher=less ghosting)
+    float taa_variance_gamma = 1.25f;   // YCoCg neighbourhood AABB expansion (γσ; tighter is safe in YCoCg)
     float taa_sharpening     = 0.2f;    // unsharp-mask strength applied after accumulation (0=off)
 
     // ---- Debug views --------------------------------------------
