@@ -1581,6 +1581,13 @@ bool VulkanRenderer::update_frame_ubo_(uint32_t frame_idx, vk::FrameUBO& out_ubo
     glm::mat4 proj           = proj_unflipped;
     proj[1][1] *= -1.0f;
 
+    // Save unjittered VP BEFORE applying TAA jitter.
+    // prevViewProj stored in the UBO must be unjittered so that TAA reprojection
+    // maps world → hist_uv without a per-frame sub-pixel offset baked in.
+    // Using the jittered version causes hist_uv = unjittered_uv + jitter_prev/2,
+    // which changes every frame → residual shimmer, worst on flat uniform surfaces.
+    const glm::mat4 unjittered_vp = proj * view;
+
     // --- Halton jitter for TAA (applied to proj before uploading to GPU) ---
     static auto halton = [](int index, int base) -> float {
         float f = 1.0f, r = 0.0f;
@@ -1655,7 +1662,7 @@ bool VulkanRenderer::update_frame_ubo_(uint32_t frame_idx, vk::FrameUBO& out_ubo
     out_ubo.iblParams[1] = m_settings.ibl_intensity;
     out_ubo.iblParams[2] = m_settings.ibl_diffuse_scale;
     out_ubo.iblParams[3] = m_settings.ibl_specular_scale;
-    m_prev_view_proj = proj * view;  // store current for next frame
+    m_prev_view_proj = unjittered_vp;  // unjittered — prev frame's jitter must NOT pollute hist_uv
 
     for (size_t i = 0; i < std::min<size_t>(ordered.size(), 8); ++i) {
         const Light& l = ordered[i];
