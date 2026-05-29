@@ -714,6 +714,7 @@ static std::unique_ptr<Node> node_from_json(const json& j, int depth) {
 
     if (type == "MeshNode") {
         auto* n = dynamic_cast<MeshNode*>(node.get());
+        if (!n) return node;
         n->mesh_name = j.value("mesh", "cube");
         n->mesh_path = j.value("mesh_path", "");
         n->collision_enabled = j.value("collision_enabled", true);
@@ -736,12 +737,14 @@ static std::unique_ptr<Node> node_from_json(const json& j, int depth) {
         n->mat_emissive_path = j.value("mat_emissive_path", "");
     } else if (type == "Camera3D") {
         auto* n = dynamic_cast<Camera3D*>(node.get());
+        if (!n) return node;
         n->fov       = j.value("fov",       70.0f);
         n->near_clip = j.value("near_clip", j.value("near", 0.05f));
         n->far_clip  = j.value("far_clip",  j.value("far",  1000.0f));
         n->current   = j.value("current",   false);
     } else if (type == "DirectionalLight") {
         auto* n = dynamic_cast<DirectionalLight*>(node.get());
+        if (!n) return node;
         if (j.contains("color")) n->color = vec3_from_json(j["color"], {1,1,1});
         n->intensity    = j.value("intensity",    1.0f);
         n->cast_shadow  = j.value("cast_shadow",  n->cast_shadow);
@@ -757,11 +760,13 @@ static std::unique_ptr<Node> node_from_json(const json& j, int depth) {
         n->temporal_shadow_alpha = j.value("temporal_shadow_alpha", 0.1f);
     } else if (type == "PointLight") {
         auto* n = dynamic_cast<PointLight*>(node.get());
+        if (!n) return node;
         if (j.contains("color")) n->color = vec3_from_json(j["color"], {1,1,1});
         n->intensity = j.value("intensity", 1.0f);
         n->range     = j.value("range", 10.0f);
     } else if (type == "CollisionShape3D") {
         auto* n = dynamic_cast<CollisionShape3D*>(node.get());
+        if (!n) return node;
         std::string sh = j.value("shape", "box");
         if      (sh == "sphere")  n->shape = CollisionShape3D::Shape::Sphere;
         else if (sh == "capsule") n->shape = CollisionShape3D::Shape::Capsule;
@@ -771,13 +776,16 @@ static std::unique_ptr<Node> node_from_json(const json& j, int depth) {
         n->height = j.value("height", 1.0f);
     } else if (type == "CharacterBody3D") {
         auto* n = dynamic_cast<CharacterBody3D*>(node.get());
+        if (!n) return node;
         n->capsule_radius = j.value("capsule_radius", 0.35f);
         n->capsule_height = j.value("capsule_height", 1.5f);
     } else if (type == "SceneInstance") {
         auto* n = dynamic_cast<SceneInstance*>(node.get());
+        if (!n) return node;
         n->scene_path = j.value("scene", "");
     } else if (type == "ModelNode") {
         auto* n = dynamic_cast<ModelNode*>(node.get());
+        if (!n) return node;
         n->path            = j.value("path",           "");
         n->texture_dir     = j.value("texture_dir",    "");
         n->albedo_override = j.value("albedo",         "");
@@ -785,6 +793,7 @@ static std::unique_ptr<Node> node_from_json(const json& j, int depth) {
         // No extra fields beyond Node3D + script_path.
     } else if (type == "FlyCamController") {
         auto* n = dynamic_cast<FlyCamController*>(node.get());
+        if (!n) return node;
         n->yaw          = j.value("yaw",           n->yaw);
         n->pitch        = j.value("pitch",         n->pitch);
         n->move_speed   = j.value("move_speed",    n->move_speed);
@@ -801,6 +810,7 @@ static std::unique_ptr<Node> node_from_json(const json& j, int depth) {
         }
     } else if (type == "WorldEnvironment") {
         auto* n = dynamic_cast<WorldEnvironment*>(node.get());
+        if (!n) return node;
         if (j.contains("zenith_color"))  n->zenith_color  = vec3_from_json(j["zenith_color"],  {0.08f, 0.15f, 0.40f});
         if (j.contains("horizon_color")) n->horizon_color = vec3_from_json(j["horizon_color"], {0.50f, 0.60f, 0.70f});
         if (j.contains("sun_color"))     n->sun_color     = vec3_from_json(j["sun_color"],     {3.0f,  2.5f,  2.0f});
@@ -840,6 +850,7 @@ static std::unique_ptr<Node> node_from_json(const json& j, int depth) {
         n->taa_sharpening = j.value("taa_sharpening", 0.2f);
     } else if (type == "AudioStreamPlayer") {
         auto* n = dynamic_cast<AudioStreamPlayer*>(node.get());
+        if (!n) return node;
         n->clip_path = j.value("clip_path", "");
         n->volume    = j.value("volume",    1.0f);
         n->pitch     = j.value("pitch",     1.0f);
@@ -848,6 +859,7 @@ static std::unique_ptr<Node> node_from_json(const json& j, int depth) {
         n->bus       = j.value("bus",       "SFX");
     } else if (type == "AudioStreamPlayer3D") {
         auto* n = dynamic_cast<AudioStreamPlayer3D*>(node.get());
+        if (!n) return node;
         n->clip_path    = j.value("clip_path",    "");
         n->volume       = j.value("volume",       1.0f);
         n->pitch        = j.value("pitch",        1.0f);
