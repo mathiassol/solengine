@@ -1,5 +1,19 @@
 # ---- sol_editor: Qt6 Widgets editor application --------------------------------
-list(APPEND CMAKE_PREFIX_PATH "C:/Qt/6.7.3/msvc2019_64")
+# Resolve Qt6 install directory:
+#   1. Use the Qt6_DIR CMake variable if the caller set it
+#   2. Fall back to the QT_DIR / Qt6_DIR environment variables
+#   3. Fall back to the legacy hardcoded default so existing setups keep working
+if(DEFINED Qt6_DIR)
+    # already set by -DQt6_DIR=... on the cmake command line — nothing to do
+elseif(DEFINED ENV{Qt6_DIR})
+    list(APPEND CMAKE_PREFIX_PATH "$ENV{Qt6_DIR}")
+elseif(DEFINED ENV{QT_DIR})
+    list(APPEND CMAKE_PREFIX_PATH "$ENV{QT_DIR}")
+else()
+    # Legacy fallback — keeps existing developer machines working unchanged
+    list(APPEND CMAKE_PREFIX_PATH "C:/Qt/6.7.3/msvc2019_64")
+endif()
+
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
 
 set(EDITOR_SOURCES
@@ -37,8 +51,20 @@ target_link_libraries(sol_editor PRIVATE
 )
 
 # ---- Deploy Qt DLLs alongside the exe ----------------------------------------
+# Look for windeployqt relative to the Qt install found by find_package,
+# then fall back to a plain PATH search so any Qt install works.
+get_target_property(_qt6_qmake Qt6::qmake IMPORTED_LOCATION)
+if(_qt6_qmake)
+    get_filename_component(_qt6_bin_dir "${_qt6_qmake}" DIRECTORY)
+else()
+    set(_qt6_bin_dir "")
+endif()
+
 find_program(WINDEPLOYQT_EXECUTABLE windeployqt
-    HINTS "C:/Qt/6.7.3/msvc2019_64/bin"
+    HINTS "${_qt6_bin_dir}"
+          "$ENV{Qt6_DIR}/bin"
+          "$ENV{QT_DIR}/bin"
+          "C:/Qt/6.7.3/msvc2019_64/bin"
 )
 
 if(WINDEPLOYQT_EXECUTABLE)
@@ -54,7 +80,8 @@ if(WINDEPLOYQT_EXECUTABLE)
 else()
     message(WARNING
         "windeployqt not found — Qt DLLs will not be auto-deployed.\n"
-        "Add C:/Qt/6.7.3/msvc2019_64/bin to PATH or copy Qt DLLs manually."
+        "Set Qt6_DIR (env or CMake variable) to your Qt install, e.g.:\n"
+        "  cmake -DQt6_DIR=C:/Qt/6.7.3/msvc2019_64/lib/cmake/Qt6 ..."
     )
 endif()
 
