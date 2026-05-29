@@ -1,5 +1,6 @@
 // Post-processes the adapter-generated wrangler.json to be Cloudflare Pages compatible.
-import { readFileSync, writeFileSync } from 'fs';
+// Also flattens dist/client/ → dist/ so Cloudflare Pages serves HTML from the root.
+import { readFileSync, writeFileSync, cpSync, rmSync, existsSync } from 'fs';
 
 const files = [
 	'dist/server/wrangler.json',
@@ -70,3 +71,14 @@ for (const path of files) {
 	writeFileSync(path, JSON.stringify(cfg, null, 2));
 	console.log(`Patched ${path}`);
 }
+
+// Flatten dist/client/ → dist/ so Cloudflare Pages GitHub integration
+// finds HTML at the root of the output directory instead of in a subfolder.
+// (The adapter splits output into dist/client/ + dist/server/; Pages CI only
+//  reads the configured output dir and expects files directly there.)
+if (existsSync('dist/client')) {
+	cpSync('dist/client', 'dist', { recursive: true });
+	rmSync('dist/client', { recursive: true, force: true });
+	console.log('Flattened dist/client/ → dist/');
+}
+
