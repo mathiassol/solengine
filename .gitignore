@@ -9,6 +9,7 @@ out/
 .cache/
 *.user
 CMakeUserPresets.json
+CMakeSettings.json
 
 # CMake deps cache
 _deps/
@@ -23,8 +24,21 @@ imgui.ini
 *.mp4
 *.mkv
 demo/models/
-demo/assets/apoc/
+demo/assets/
 
-# Temp / debug files
-*.err
-*.r2
+# Demo project — game content, not engine source
+demo/
+
+# Personal / research files
+*.pdf
+*.pptx
+*.ppt
+ACLib/
+Docs/
+aqtinstall.log
+*.log
+review.md
+
+# Utility bat files not needed for source build
+runDemo.bat
+wipe.bat
