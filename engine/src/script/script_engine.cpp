@@ -20,6 +20,7 @@
 #include "physics/physics.h"
 #include "platform/window.h"
 #include "sol/scene/node_factory.h"
+#include "sol/scene/model_node.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -313,6 +314,36 @@ static int engine_create_node_lua(lua_State* L) {
     if      (auto* rb = dynamic_cast<RigidBody3D*>(raw))  (void)luabridge::push(L, rb);
     else if (auto* n3 = dynamic_cast<Node3D*>(raw))       (void)luabridge::push(L, n3);
     else                                                   (void)luabridge::push(L, raw);
+    return 1;
+}
+
+// ---- Engine instantiate_model (raw Lua C-function) ----
+// Creates a ModelNode from a file path and spawns it into the current scene.
+static int engine_instantiate_model_lua(lua_State* L) {
+    auto e_res = luabridge::get<Engine*>(L, 1);
+    if (!e_res || !*e_res) { lua_pushnil(L); return 1; }
+    Engine* e = *e_res;
+    const char* path = luaL_checkstring(L, 2);
+
+    Scene* sc = e->scene_manager().current_scene();
+    if (!sc || !sc->root()) { lua_pushnil(L); return 1; }
+
+    // Derive a name from the file stem
+    std::string node_name = path;
+    auto slash = node_name.find_last_of("/\\");
+    if (slash != std::string::npos) node_name = node_name.substr(slash + 1);
+    auto dot = node_name.rfind('.');
+    if (dot != std::string::npos) node_name = node_name.substr(0, dot);
+
+    auto node = std::make_unique<ModelNode>();
+    node->path = path;
+    node->name = node_name;
+
+    Node* raw = node.get();
+    sc->spawn_node(sc->root(), std::move(node), *e);
+
+    if (auto* n3 = dynamic_cast<Node3D*>(raw)) (void)luabridge::push(L, n3);
+    else                                        (void)luabridge::push(L, raw);
     return 1;
 }
 
@@ -710,7 +741,8 @@ void ScriptEngine::register_bindings() {
                 .addFunction("play_sound_bus",      &engine_play_sound_bus)
                 .addFunction("raycast",            &engine_raycast_lua)
                 .addFunction("overlap_sphere",     &engine_overlap_sphere_lua)
-                .addFunction("create_node",   engine_create_node_lua)
+                .addFunction("create_node",        engine_create_node_lua)
+                .addFunction("instantiate_model",  engine_instantiate_model_lua)
                 .addFunction("add_node",      &engine_add_node)
                 .addFunction("destroy_node",  &engine_destroy_node)
                 .addFunction("get_root_node", &engine_get_root)
@@ -781,6 +813,80 @@ void ScriptEngine::register_bindings() {
     add_fn("load_bindings",     InputCb::load_bindings);
 
     lua_setglobal(&L, "Input");
+
+    // -------------------------------------------------------------------------
+    // Lua convenience namespaces — thin wrappers around engine: functions so
+    // scripts can use Scene.create_node(), Physics.raycast(), etc.
+    // -------------------------------------------------------------------------
+    static const char* bootstrap = R"LUA(
+-- Vec3 global alias (sol.Vec3 / sol.vec3 → Vec3 / vec3)
+Vec3 = sol.Vec3
+vec3 = sol.vec3
+
+-- Scene namespace
+Scene = {}
+function Scene.create_node(type_name)
+    local n = engine:create_node(type_name)
+    if n then engine:add_node(engine:get_root_node(), n) end
+    return n
+end
+function Scene.instantiate_model(path)
+    return engine:instantiate_model(path)
+end
+function Scene.get_node(name)
+    return engine:find_node(name)
+end
+function Scene.get_root()
+    return engine:get_root_node()
+end
+function Scene.add_node(parent, child)
+    engine:add_node(parent, child)
+end
+function Scene.destroy_node(node)
+    engine:destroy_node(node)
+end
+function Scene.load(name)
+    engine:load_scene(name)
+end
+function Scene.find_by_tag(tag)
+    return engine:find_by_tag(tag)
+end
+
+-- Physics namespace
+Physics = {}
+function Physics.raycast(origin, direction, max_dist, ignore)
+    return engine:raycast(origin, direction, max_dist or 1000.0, ignore)
+end
+function Physics.overlap_sphere(center, radius)
+    return engine:overlap_sphere(center, radius)
+end
+
+-- Audio namespace
+Audio = {}
+function Audio.play_oneshot(path)
+    engine:play_sound(path)
+end
+function Audio.play_oneshot_bus(path, bus)
+    engine:play_sound_bus(path, bus)
+end
+
+-- Log namespace
+Log = {}
+function Log.info(msg)  engine:log("[info] "  .. tostring(msg)) end
+function Log.warn(msg)  engine:log("[warn] "  .. tostring(msg)) end
+function Log.error(msg) engine:log("[error] " .. tostring(msg)) end
+
+-- Input action aliases (is_action_pressed → is_pressed, etc.)
+Input.is_action_pressed       = Input.is_pressed
+Input.is_action_just_pressed  = Input.is_just_pressed
+Input.is_action_just_released = Input.is_just_released
+)LUA";
+
+    if (luaL_dostring(&L, bootstrap) != LUA_OK) {
+        const char* err = lua_tostring(&L, -1);
+        SOL_WARN(std::string("Lua bootstrap error: ") + (err ? err : "?"));
+        lua_pop(&L, 1);
+    }
 }
 
 ScriptEngine::ScriptEngine() = default;
