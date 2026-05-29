@@ -1,10 +1,12 @@
 #pragma once
 #include "sol/export.h"
+#include "sol/scene/component.h"
 #include <glm/glm.hpp>
 #include <string>
 #include <vector>
 #include <memory>
 #include <functional>
+#include <unordered_set>
 
 namespace sol {
 
@@ -15,6 +17,15 @@ class Engine;
 class SOL_API Node {
 public:
     std::string name;
+    std::string script_path;
+    std::unordered_set<std::string> tags;
+    void add_tag(const std::string& t)       { tags.insert(t); }
+    bool has_tag(const std::string& t) const { return tags.count(t) > 0; }
+    void remove_tag(const std::string& t)    { tags.erase(t); }
+
+    // Tick phase — which update pass this node runs in (default: PrePhysics).
+    // Stage 1 will honour this when the engine loop is split into phases.
+    ETickGroup tick_group = ETickGroup::PrePhysics;
 
     Node()          = default;
     virtual ~Node() = default;
@@ -38,6 +49,7 @@ public:
     const  std::vector<std::unique_ptr<Node>>& children() const { return m_children; }
 
     void add_child(std::unique_ptr<Node> child);
+    bool remove_child(Node* child);
 
     // Find by name (first match, depth-first)
     Node* find(const std::string& name) const;
@@ -58,9 +70,35 @@ public:
         for (auto& c : m_children) c->each<T>(fn);
     }
 
+    // ---- Component management ----------------------------------------
+
+    // Attach a component; sets owner pointer and returns the raw pointer.
+    IComponent* add_component(std::unique_ptr<IComponent> comp);
+
+    // Remove the first component whose component_type() matches type_name.
+    // Returns true if found and removed.
+    bool remove_component(const char* type_name);
+
+    // Pointer-based removal — safer when multiple components share the same type name.
+    bool remove_component(IComponent* comp);
+
+    // Typed accessor — returns nullptr if no component of type T is attached.
+    template<typename T>
+    T* get_component() {
+        for (auto& c : m_components)
+            if (auto* t = dynamic_cast<T*>(c.get())) return t;
+        return nullptr;
+    }
+
+    // Read-only access to the component list.
+    const std::vector<std::unique_ptr<IComponent>>& components() const {
+        return m_components;
+    }
+
 private:
     Node* m_parent = nullptr;
-    std::vector<std::unique_ptr<Node>> m_children;
+    std::vector<std::unique_ptr<Node>>       m_children;
+    std::vector<std::unique_ptr<IComponent>> m_components;
 };
 
 } // namespace sol

@@ -28,7 +28,9 @@ void on_init(sol::Engine* engine) {
 }
 
 void on_update(sol::Engine* engine, float dt) {
-    engine->scene_manager().update(*engine, dt);
+    // Scene update is now driven by Engine::run() via phased tick.
+    // on_update is a late-frame hook for custom game logic.
+    (void)engine; (void)dt;
 }
 
 void on_render(sol::Engine* engine) {

@@ -8,6 +8,7 @@
 
 class QScrollArea;
 class QFormLayout;
+class QLineEdit;
 
 namespace sol { struct FieldDesc; }
 
@@ -32,6 +33,7 @@ private:
 
     sol::EngineHost*      m_host{};
     sol::Node*            m_current_node{};
+    QLineEdit*            m_name_edit{};
     QScrollArea*          m_scroll_area{};
     QWidget*              m_content{};
     QFormLayout*          m_form{};

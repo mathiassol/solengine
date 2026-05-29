@@ -24,7 +24,11 @@ export default defineConfig({
 				},
 				{
 					label: 'Reference',
-					autogenerate: { directory: 'docs/reference' },
+					items: [
+						{ label: 'Node Types', slug: 'reference/node-types' },
+						{ label: 'Lua API', slug: 'reference/lua-api' },
+						{ label: 'Material Editor', slug: 'reference/material-editor' },
+					],
 				},
 			],
 			customCss: ['./src/styles/custom.css'],

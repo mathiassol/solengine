@@ -15,15 +15,30 @@ if(SOL_MONOLITHIC)
         src/render/vk/vk_renderer.cpp
         src/physics/physics.cpp
         src/asset/gltf_loader.cpp
+        src/asset/model_loader.cpp
+        src/asset/fbx_loader.cpp
+        src/asset/blend_loader.cpp
+        src/asset/stb_impl.cpp
         src/ui/imgui_layer.cpp
         src/ui/ImGuizmo.cpp
         src/log.cpp
         src/scene/scene.cpp
+        src/scene/node_factory.cpp
+        src/scene/node_handle.cpp
         src/scene/physics_nodes.cpp
         src/scene/scene_manager.cpp
         src/scene/fly_cam_controller.cpp
+        src/scene/actor.cpp
+        src/scene/lua_component.cpp
+        src/script/script_engine.cpp
         src/project/project.cpp
-        src/reflect.cpp)
+        src/input/input_manager.cpp
+        src/ecs_world.cpp
+        src/reflect.cpp
+        src/world/world_partition.cpp
+        src/perf/profiler.cpp
+        src/audio/audio_engine.cpp
+        src/scene/audio_nodes.cpp)
 else()
     add_library(engine_core SHARED
         src/engine.cpp
@@ -40,21 +55,37 @@ else()
         src/render/vk/vk_renderer.cpp
         src/physics/physics.cpp
         src/asset/gltf_loader.cpp
+        src/asset/model_loader.cpp
+        src/asset/fbx_loader.cpp
+        src/asset/blend_loader.cpp
+        src/asset/stb_impl.cpp
         src/ui/imgui_layer.cpp
         src/ui/ImGuizmo.cpp
         src/log.cpp
         src/scene/scene.cpp
+        src/scene/node_factory.cpp
+        src/scene/node_handle.cpp
         src/scene/physics_nodes.cpp
         src/scene/scene_manager.cpp
         src/scene/fly_cam_controller.cpp
+        src/scene/actor.cpp
+        src/scene/lua_component.cpp
+        src/script/script_engine.cpp
         src/project/project.cpp
-        src/reflect.cpp)
+        src/input/input_manager.cpp
+        src/ecs_world.cpp
+        src/reflect.cpp
+        src/world/world_partition.cpp
+        src/perf/profiler.cpp
+        src/audio/audio_engine.cpp
+        src/scene/audio_nodes.cpp)
 endif()
 
 target_include_directories(engine_core
     PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
-            ${CMAKE_CURRENT_BINARY_DIR}/generated)  # for embedded SPIR-V headers
+            ${CMAKE_CURRENT_BINARY_DIR}/generated
+            ${luabridge3_SOURCE_DIR}/Source)  # for embedded SPIR-V headers
 
 target_link_libraries(engine_core
     PUBLIC
@@ -68,7 +99,10 @@ target_link_libraries(engine_core
         Jolt
         cgltf
         nlohmann_json::nlohmann_json
-        stb_iface)
+        stb_iface
+        ufbx_iface
+        lua54
+        miniaudio_iface)
 
 # Platform-specific Vulkan surface extension
 if(WIN32)
@@ -154,8 +188,6 @@ function(sol_compile_shader STAGE GLSL_FILE OUT_HEADER_VAR)
     set(${OUT_HEADER_VAR} ${HDR_FILE} PARENT_SCOPE)
 endfunction()
 
-sol_compile_shader(vert ${SOL_SHADER_SRC}/pbr.vert.glsl          SOL_H_pbr_vert)
-sol_compile_shader(frag ${SOL_SHADER_SRC}/pbr.frag.glsl          SOL_H_pbr_frag)
 sol_compile_shader(vert ${SOL_SHADER_SRC}/shadow.vert.glsl       SOL_H_shad_vert)
 sol_compile_shader(frag ${SOL_SHADER_SRC}/shadow.frag.glsl       SOL_H_shad_frag)
 sol_compile_shader(frag ${SOL_SHADER_SRC}/shadow_vsm.frag.glsl  SOL_H_shad_vsm_frag)
@@ -165,26 +197,31 @@ sol_compile_shader(vert ${SOL_SHADER_SRC}/fullscreen.vert.glsl   SOL_H_fs_vert)
 sol_compile_shader(frag ${SOL_SHADER_SRC}/bloom_bright.frag.glsl SOL_H_bloom_b)
 sol_compile_shader(frag ${SOL_SHADER_SRC}/bloom_blur.frag.glsl   SOL_H_bloom_blur)
 sol_compile_shader(frag ${SOL_SHADER_SRC}/tonemap.frag.glsl      SOL_H_tonemap)
-sol_compile_shader(frag ${SOL_SHADER_SRC}/gbuf.frag.glsl         SOL_H_gbuf_frag)
-sol_compile_shader(frag ${SOL_SHADER_SRC}/deferred_light.frag.glsl SOL_H_deferred_frag)
 sol_compile_shader(frag ${SOL_SHADER_SRC}/ssao.frag.glsl          SOL_H_ssao_frag)
 sol_compile_shader(frag ${SOL_SHADER_SRC}/ssao_blur.frag.glsl     SOL_H_ssao_blur_frag)
 sol_compile_shader(frag ${SOL_SHADER_SRC}/ibl_sky_capture.frag.glsl  SOL_H_ibl_sky)
 sol_compile_shader(frag ${SOL_SHADER_SRC}/ibl_irradiance.frag.glsl   SOL_H_ibl_irr)
 sol_compile_shader(frag ${SOL_SHADER_SRC}/ibl_prefilter.frag.glsl    SOL_H_ibl_pref)
 sol_compile_shader(frag ${SOL_SHADER_SRC}/ibl_brdf_lut.frag.glsl     SOL_H_ibl_brdf)
+sol_compile_shader(frag ${SOL_SHADER_SRC}/equirect_to_cube.frag.glsl SOL_H_equirect)
 sol_compile_shader(frag ${SOL_SHADER_SRC}/taa.frag.glsl              SOL_H_taa_frag)
+sol_compile_shader(frag ${SOL_SHADER_SRC}/ssr.frag.glsl          SOL_H_ssr_frag)
+sol_compile_shader(frag ${SOL_SHADER_SRC}/ssr_temporal.frag.glsl SOL_H_ssr_temporal_frag)
+sol_compile_shader(vert ${SOL_SHADER_SRC}/depth_pre.vert.glsl       SOL_H_depth_pre_vert)
+sol_compile_shader(frag ${SOL_SHADER_SRC}/depth_pre.frag.glsl       SOL_H_depth_pre_frag)
+sol_compile_shader(vert ${SOL_SHADER_SRC}/forward_plus.vert.glsl    SOL_H_fwd_plus_vert)
+sol_compile_shader(frag ${SOL_SHADER_SRC}/forward_plus.frag.glsl    SOL_H_fwd_plus_frag)
 
 target_sources(engine_core PRIVATE
-    ${SOL_H_pbr_vert}  ${SOL_H_pbr_frag}
     ${SOL_H_shad_vert} ${SOL_H_shad_frag} ${SOL_H_shad_vsm_frag}
     ${SOL_H_sky_vert}  ${SOL_H_sky_frag}
     ${SOL_H_fs_vert}
     ${SOL_H_bloom_b}   ${SOL_H_bloom_blur}
     ${SOL_H_tonemap}
-    ${SOL_H_gbuf_frag} ${SOL_H_deferred_frag}
     ${SOL_H_ssao_frag} ${SOL_H_ssao_blur_frag}
     ${SOL_H_ibl_sky}   ${SOL_H_ibl_irr}
-    ${SOL_H_ibl_pref}  ${SOL_H_ibl_brdf}
-    ${SOL_H_taa_frag})
-
+    ${SOL_H_ibl_pref}  ${SOL_H_ibl_brdf}  ${SOL_H_equirect}
+    ${SOL_H_taa_frag}
+    ${SOL_H_ssr_frag}        ${SOL_H_ssr_temporal_frag}
+    ${SOL_H_depth_pre_vert} ${SOL_H_depth_pre_frag}
+    ${SOL_H_fwd_plus_vert}  ${SOL_H_fwd_plus_frag})

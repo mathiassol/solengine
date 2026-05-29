@@ -6,8 +6,11 @@
 #include <glm/glm.hpp>
 #include <string>
 #include <memory>
+#include <functional>
 
 namespace sol {
+
+class Node3D;
 
 enum class EditorGizmoMode {
     Translate,
@@ -92,6 +95,7 @@ public:
 
     void set_gizmo_mode(EditorGizmoMode mode);
     EditorGizmoMode gizmo_mode() const;
+    void set_gizmo_visible(bool v);
 
     // Graceful shutdown.
     void close();
@@ -110,12 +114,65 @@ public:
     // Adds it as a child of `parent` (or scene root if null), calls on_ready.
     // Returns the new node, or null on failure.
     Node* instantiate_model(const std::string& path, Node* parent = nullptr);
+    Node* create_node(const std::string& type, Node* parent = nullptr);
+    bool remove_node(Node* node);
+    void rename_node(Node* node, const std::string& new_name);
+    float frame_fps() const;
+    int   frame_draw_calls() const;
+    void  set_gizmo_space(bool local);
+    bool  gizmo_space_local() const;
+    void  set_gizmo_undo_callback(std::function<void(Node3D*, glm::vec3, glm::vec3, glm::vec3,
+                                                                glm::vec3, glm::vec3, glm::vec3)> cb);
+    Node* duplicate_node(Node* node);
+
+    // Reload material textures on a MeshNode from its mat_*_path fields.
+    void apply_mesh_material_textures(Node* node);
 
     // Save the current scene to its current path or the provided path.
     bool save_scene(const std::string& path = "");
 
+    // Serialise current scene to an in-memory JSON string (for tab state snapshots).
+    std::string scene_state_to_string() const;
+
+    // Restore a scene from a JSON string previously returned by scene_state_to_string().
+    // original_path is stored back into scene->path so Ctrl+S still works.
+    bool load_scene_from_string(const std::string& json_str, const std::string& original_path = "");
+
+    // ── Hot Scene Slot API ─────────────────────────────────────────────────────
+    // Each SceneEditor tab owns one slot.  All slots stay alive (on_ready'd) in
+    // memory simultaneously; switching tabs only swaps scene pointers — no
+    // on_destroy / on_ready overhead, no disk I/O.
+
+    // Allocate a new slot.  The first call adopts the scene currently in the
+    // SceneManager (it becomes the "active" slot).  Subsequent calls create an
+    // empty slot.  Returns the slot ID (>= 0).
+    int  create_scene_slot();
+
+    // Destroy a slot.  If it is the active slot the scene is unloaded (on_destroy).
+    // If it is an inactive slot the stored scene is destroyed via on_destroy.
+    void destroy_scene_slot(int slot_id);
+
+    // Load a scene file into a slot.
+    // Active slot: deferred via request_scene (safe, normal load path).
+    // Inactive slot: loads immediately, calls on_ready, stores in slot.
+    bool load_scene_into_slot(int slot_id, const std::string& path);
+
+    // Request switching to a slot at the start of the next tick.
+    // Just swaps scene pointers — does NOT call on_ready / on_destroy.
+    void activate_scene_slot(int slot_id);
+
+    // Returns the currently active slot id (-1 if none).
+    int  active_scene_slot() const;
+
     // Write a named field on a node through the component registry.
     void set_field(Node* node, const std::string& field_name, const void* data);
+    void set_editor_draw_fn(std::function<void()> fn);
+    void imgui_add_text(const char* utf8);
+
+    // Returns the ImGuiContext* created by the engine DLL.
+    // The editor EXE must call ImGui::SetCurrentContext() with this after
+    // open_for_editor() to sync the EXE's static GImGui pointer.
+    ImGuiContext* imgui_get_context() const;
 
 private:
     void render_editor_gizmo_();

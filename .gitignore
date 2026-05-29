@@ -19,7 +19,11 @@ imgui.ini
 # Large binary assets — keep out of git
 *.glb
 *.gltf
+*.avi
+*.mp4
+*.mkv
 demo/models/
+demo/assets/apoc/
 
 # Temp / debug files
 *.err

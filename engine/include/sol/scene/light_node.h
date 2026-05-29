@@ -11,6 +11,16 @@ public:
     bool      cast_shadow = true; // shadows on by default for scene lights
     int       shadow_mode = 1;    // 0=None  1=PCF  2=PCSS  3=VSM
 
+    float csm_far              = 100.0f;
+    float csm_lambda           = 0.75f;
+    int   shadow_quality       = 1;
+    float shadow_pcf_radius    = 1.5f;
+    float shadow_pcss_light    = 3.0f;
+    float contact_shadow_dist  = 0.0f;
+    float contact_shadow_thick = 0.5f;
+    bool  temporal_shadow      = true;
+    float temporal_shadow_alpha = 0.1f;
+
     const char* type_name() const override { return "DirectionalLight"; }
     glm::vec3 world_direction() const { return forward(); }
 };

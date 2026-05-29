@@ -67,7 +67,7 @@ VkPipeline build_pipeline(VkDevice device, const PipelineDesc& d) {
 
     VkPipelineMultisampleStateCreateInfo ms{};
     ms.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    ms.rasterizationSamples = d.sample_count;
 
     VkPipelineDepthStencilStateCreateInfo ds{};
     ds.sType            = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;

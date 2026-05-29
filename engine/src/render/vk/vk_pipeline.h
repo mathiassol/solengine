@@ -27,6 +27,8 @@ struct PipelineDesc {
     float                 depth_bias_slope = 0.0f;
     // Number of color blend attachment states. 0 = auto (0 if depth-only, 1 otherwise).
     uint32_t              color_attachment_count = 0;
+    // MSAA sample count for the pipeline (default 1x).
+    VkSampleCountFlagBits sample_count = VK_SAMPLE_COUNT_1_BIT;
 
     // Vertex input
     std::vector<VkVertexInputBindingDescription>   vertex_bindings;

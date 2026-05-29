@@ -26,8 +26,8 @@ void AssetBrowserPanel::setupUi()
 
     m_model = new QFileSystemModel(this);
     // Show only recognised asset types; hide everything else
-    m_model->setNameFilters({"*.glb", "*.solscene", "*.json",
-                              "*.png", "*.jpg",      "*.hdr"});
+    m_model->setNameFilters({"*.glb", "*.gltf", "*.fbx", "*.blend",
+                              "*.solscene", "*.json", "*.png", "*.jpg", "*.hdr"});
     m_model->setNameFilterDisables(false); // hide non-matching files
 
     m_treeView = new QTreeView(this);
@@ -48,7 +48,7 @@ void AssetBrowserPanel::setupUi()
     connect(m_treeView, &QTreeView::doubleClicked,
             this, &AssetBrowserPanel::onDoubleClicked);
 
-    auto* hint = new QLabel("Drag .glb onto the viewport to add to scene", this);
+    auto* hint = new QLabel("Drag .glb, .gltf, .fbx, or .blend onto the viewport to add to scene", this);
     hint->setProperty("muted", true);
     hint->setAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
     hint->setContentsMargins(4, 4, 4, 0);

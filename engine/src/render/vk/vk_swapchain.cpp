@@ -22,6 +22,8 @@ SwapchainSupportDetails query_swapchain_support(VkPhysicalDevice gpu, VkSurfaceK
 }
 
 static VkSurfaceFormatKHR choose_format(const std::vector<VkSurfaceFormatKHR>& fmts) {
+    if (fmts.empty())
+        return { VK_FORMAT_B8G8R8A8_UNORM, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR };
     for (auto& f : fmts)
         if (f.format == VK_FORMAT_B8G8R8A8_UNORM && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
             return f;
@@ -29,8 +31,10 @@ static VkSurfaceFormatKHR choose_format(const std::vector<VkSurfaceFormatKHR>& f
 }
 
 static VkPresentModeKHR choose_present_mode(const std::vector<VkPresentModeKHR>& modes) {
-    for (auto m : modes) if (m == VK_PRESENT_MODE_MAILBOX_KHR)     return m;
-    for (auto m : modes) if (m == VK_PRESENT_MODE_IMMEDIATE_KHR)   return m;
+    // Default to FIFO (vsync). This caps GPU utilisation to what the display actually needs,
+    // leaving headroom for the OS display pipeline (critical for Remote Desktop sessions).
+    // FIFO is guaranteed to be available per the Vulkan spec.
+    for (auto m : modes) if (m == VK_PRESENT_MODE_FIFO_KHR) return m;
     return VK_PRESENT_MODE_FIFO_KHR;
 }
 
@@ -210,7 +214,8 @@ bool VkSwapchain::recreate(VkContext& ctx, GLFWwindow* window) {
 // ---------------------------------------------------------------------------
 VkResult VkSwapchain::acquire_next(VkContext& ctx, uint32_t frame_idx, uint32_t& out_idx) {
     auto& f = m_frames[frame_idx];
-    vkWaitForFences(ctx.device(), 1, &f.in_flight_fence, VK_TRUE, UINT64_MAX);
+    VkResult wait_r = vkWaitForFences(ctx.device(), 1, &f.in_flight_fence, VK_TRUE, UINT64_MAX);
+    if (wait_r != VK_SUCCESS) return wait_r;
     VkResult r = vkAcquireNextImageKHR(ctx.device(), m_swapchain, UINT64_MAX,
                                        f.image_available, VK_NULL_HANDLE, &out_idx);
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) return r;

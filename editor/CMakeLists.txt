@@ -6,22 +6,13 @@ set(EDITOR_SOURCES
     src/main.cpp
     src/main_window.cpp
     src/viewport_widget.cpp
-    src/panels/console_panel.cpp
-    src/panels/hierarchy_panel.cpp
-    src/panels/inspector_panel.cpp
-    src/panels/asset_browser_panel.cpp
-    src/widgets/number_field.h
-    src/widgets/number_field.cpp
-    src/widgets/vec3_field.h
-    src/widgets/vec3_field.cpp
-    src/widgets/toggle_switch.h
-    src/widgets/toggle_switch.cpp
-    src/widgets/section_header.h
-    src/widgets/section_header.cpp
-    src/widgets/asset_path_field.h
-    src/widgets/asset_path_field.cpp
+    src/editor_ui.cpp
+    src/project_launcher.h
+    src/project_launcher.cpp
+    src/undo_redo.cpp
+    src/style/ue5_theme.cpp
+    src/style/sol_widgets.cpp
     resources.qrc
-    src/style.qss
 )
 
 qt_add_executable(sol_editor ${EDITOR_SOURCES})
@@ -42,6 +33,7 @@ target_include_directories(sol_editor PRIVATE
 target_link_libraries(sol_editor PRIVATE
     engine_core
     Qt6::Widgets
+    dwmapi
 )
 
 # ---- Deploy Qt DLLs alongside the exe ----------------------------------------
@@ -65,3 +57,14 @@ else()
         "Add C:/Qt/6.7.3/msvc2019_64/bin to PATH or copy Qt DLLs manually."
     )
 endif()
+
+# ---- Copy FontAwesome icons alongside the editor exe -----------------------
+add_custom_command(TARGET sol_editor POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:sol_editor>/fonts"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/fonts/fa-solid-900.ttf"
+            "$<TARGET_FILE_DIR:sol_editor>/fonts/fa-solid-900.ttf"
+    COMMENT "Copying FontAwesome font to output directory"
+    VERBATIM
+)

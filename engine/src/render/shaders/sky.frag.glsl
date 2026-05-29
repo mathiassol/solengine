@@ -15,11 +15,14 @@ layout(set = 0, binding = 0) uniform FrameUBO {
     vec4 u_cascade_splits;
 };
 
+layout(set = 1, binding = 0) uniform samplerCube u_sky_cube;
+
 layout(push_constant) uniform SkyPush {
-    vec4 sun_dir;
-    vec4 zenith;
-    vec4 horizon;
-    vec4 sun_color;
+    vec4  sun_dir;
+    vec4  zenith;
+    vec4  horizon;
+    vec4  sun_color;
+    ivec4 flags;   // flags.x = 1 → sample HDR cubemap
 } pc;
 
 layout(location = 0) in vec2 v_uv;
@@ -32,9 +35,14 @@ void main() {
     vec4 view_ray = inv_proj * vec4(ndc, 1.0, 1.0);
     vec3 world_dir = normalize((inv_view * vec4(normalize(view_ray.xyz), 0.0)).xyz);
 
-    float t = clamp(world_dir.y * 0.5 + 0.5, 0.0, 1.0);
-    vec3 sky = mix(pc.horizon.rgb, pc.zenith.rgb, t);
-    float sun = smoothstep(pc.sun_color.a, 1.0, dot(normalize(pc.sun_dir.xyz), world_dir));
-    sky += pc.sun_color.rgb * sun;
-    out_color = vec4(sky, 1.0);
+    if (pc.flags.x == 1) {
+        // Sample the HDR cubemap
+        out_color = vec4(texture(u_sky_cube, world_dir).rgb, 1.0);
+    } else {
+        float t = clamp(world_dir.y * 0.5 + 0.5, 0.0, 1.0);
+        vec3 sky = mix(pc.horizon.rgb, pc.zenith.rgb, t);
+        float sun = smoothstep(pc.sun_color.a, 1.0, dot(normalize(pc.sun_dir.xyz), world_dir));
+        sky += pc.sun_color.rgb * sun;
+        out_color = vec4(sky, 1.0);
+    }
 }

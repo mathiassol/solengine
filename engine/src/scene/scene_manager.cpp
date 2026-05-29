@@ -29,12 +29,26 @@ void SceneManager::request_scene(std::unique_ptr<Scene> scene) {
 }
 
 void SceneManager::flush_pending(Engine& engine) {
-    if (m_pending_scene)
+    if (m_pending_scene) {
+        // Wait for all in-flight GPU work to finish before destroying old scene resources.
+        // This prevents use-after-free of Vulkan buffers/images still referenced by
+        // in-flight command buffers from previous frames.
+        engine.renderer().wait_idle();
+        SOL_INFO("SceneManager: swapping to scene '" + m_pending_scene->name + "'");
         set_scene(std::move(m_pending_scene), engine);
+    }
 }
 
 void SceneManager::update(Engine& engine, float dt) {
     if (m_scene) m_scene->update(engine, dt);
+}
+
+void SceneManager::update_pre_physics(Engine& engine, float dt) {
+    if (m_scene) m_scene->update_pre_physics(engine, dt);
+}
+
+void SceneManager::update_post_physics(Engine& engine, float dt) {
+    if (m_scene) m_scene->update_post_physics(engine, dt);
 }
 
 void SceneManager::render(Engine& engine) {
@@ -43,6 +57,18 @@ void SceneManager::render(Engine& engine) {
 
 void SceneManager::unload(Engine& engine) {
     if (m_scene) { m_scene->on_destroy(engine); m_scene.reset(); }
+}
+
+std::unique_ptr<Scene> SceneManager::detach_scene_raw() {
+    return std::move(m_scene);
+}
+
+void SceneManager::attach_scene_raw(std::unique_ptr<Scene> scene) {
+    m_scene = std::move(scene);
+}
+
+void SceneManager::cancel_pending() {
+    m_pending_scene.reset();
 }
 
 } // namespace sol

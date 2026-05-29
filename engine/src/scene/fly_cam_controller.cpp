@@ -72,7 +72,7 @@ void FlyCamController::scan_models() {
         for (auto& e : fs::directory_iterator(models_dir)) {
             if (!e.is_regular_file()) continue;
             auto ext = e.path().extension().string();
-            if (ext == ".glb" || ext == ".gltf")
+            if (ext == ".glb" || ext == ".gltf" || ext == ".fbx" || ext == ".FBX" || ext == ".blend")
                 m_models.push_back(e.path().generic_string());
         }
         std::sort(m_models.begin(), m_models.end());
@@ -104,7 +104,6 @@ std::unique_ptr<FlyCamController> FlyCamController::clone_self_() const {
     ctrl->m_mouse_captured = m_mouse_captured;
     ctrl->m_is_clone     = true;
     ctrl->m_scene_cooldown = m_scene_cooldown;
-    ctrl->m_pcss_timer     = m_pcss_timer;
     ctrl->m_n_prev       = m_n_prev;   // carry key state so held keys don't re-trigger
     ctrl->m_p_prev       = m_p_prev;
     return ctrl;
@@ -119,6 +118,17 @@ void FlyCamController::load_scene_entry(Engine& engine) {
     if (!scene || !scene->root()) {
         SOL_WARN("FlyCamController: failed to load scene '" + path + "'");
         return;
+    }
+
+    // Remove any FlyCamController nodes that were accidentally saved into the
+    // scene file (editor saves the runtime scene which may contain injected clones).
+    {
+        std::vector<Node*> stale;
+        for (auto& ch : scene->root()->children())
+            if (dynamic_cast<FlyCamController*>(ch.get()))
+                stale.push_back(ch.get());
+        for (Node* n : stale)
+            scene->root()->remove_child(n);
     }
 
     scene->root()->add_child(clone_self_());
@@ -172,6 +182,11 @@ void FlyCamController::load_current_entry(Engine& engine) {
 void FlyCamController::on_ready(Engine& engine) {
     scan_models();
     engine.renderer().set_camera(make_camera());
+
+    // Load default HDR sky (scenes can override via hdr_sky field)
+    const std::string default_hdr = "models/sky.hdr";
+    if (std::filesystem::exists(default_hdr))
+        engine.renderer().set_hdr_sky(default_hdr);
 
     // If freshly loaded from JSON (not a clone from cycling),
     // start at entry 0 and request an immediate load.
@@ -258,23 +273,11 @@ void FlyCamController::on_update(Engine& engine, float dt) {
     if (engine.key_down(GLFW_KEY_E)) position.y += spd;
     if (engine.key_down(GLFW_KEY_Q)) position.y -= spd;
 
-    // ---- Animate FloatingSphere (PCSS test scene) ----
-    if (auto* scene = engine.scene_manager().current()) {
-        if (auto* root = scene->root()) {
-            if (auto* node = root->find("FloatingSphere")) {
-                if (auto* n3d = dynamic_cast<Node3D*>(node)) {
-                    m_pcss_timer += dt;
-                    n3d->position.y = 2.5f + std::sin(m_pcss_timer * 0.7f) * 2.0f;
-                }
-            }
-        }
-    }
-
     // ---- Push camera to renderer ----
     engine.renderer().set_camera(make_camera());
 
     // ---- HUD ----
-    if (show_ui) draw_hud(engine);
+    if (show_ui && !engine.is_editor_mode()) draw_hud(engine);
 }
 
 void FlyCamController::on_destroy(Engine& engine) {
@@ -344,8 +347,8 @@ void FlyCamController::draw_hud(Engine& engine) {
 
     // ---- Post-Processing ----------------------------------------
     if (ImGui::CollapsingHeader("Post-Processing", ImGuiTreeNodeFlags_DefaultOpen)) {
-        static const char* tonemap_items[] = { "ACES (cinematic)", "Reinhard (soft)", "Linear (raw HDR)" };
-        ImGui::Combo("Tonemap", &rs.tonemap_mode, tonemap_items, 3);
+        static const char* tonemap_items[] = { "ACES (cinematic)", "Reinhard (soft)", "Linear (raw HDR)", "AgX (filmic)" };
+        ImGui::Combo("Tonemap", &rs.tonemap_mode, tonemap_items, 4);
 
         ImGui::SliderFloat("Exposure", &rs.exposure, 0.1f, 4.0f, "%.2f");
 
@@ -415,6 +418,19 @@ void FlyCamController::draw_hud(Engine& engine) {
         ImGui::EndDisabled();
     }
 
+    // ---- SSR -----------------------------------------------
+    if (ImGui::CollapsingHeader("SSR (Screen Space Reflections)")) {
+        ImGui::Checkbox("Enable SSR", &rs.ssr_enabled);
+        ImGui::BeginDisabled(!rs.ssr_enabled);
+        ImGui::SliderInt  ("Steps",            &rs.ssr_steps,           16, 128);
+        ImGui::SliderFloat("Thickness",        &rs.ssr_thickness,       0.05f, 2.0f,  "%.2f");
+        ImGui::SliderFloat("Max Distance",     &rs.ssr_max_distance,    1.0f, 50.0f,  "%.1f");
+        ImGui::SliderFloat("Roughness Cutoff", &rs.ssr_roughness_cutoff,0.1f, 1.0f,  "%.2f");
+        ImGui::SliderFloat("Intensity",        &rs.ssr_intensity,       0.0f, 2.0f,  "%.2f");
+        ImGui::SliderFloat("Temporal Blend",   &rs.ssr_temporal_blend,  0.05f, 0.5f, "%.2f");
+        ImGui::EndDisabled();
+    }
+
     // ---- IBL -----------------------------------------------
     if (ImGui::CollapsingHeader("IBL (Image-Based Lighting)")) {
         ImGui::Checkbox("Enable IBL", &rs.ibl_enabled);
@@ -433,10 +449,11 @@ void FlyCamController::draw_hud(Engine& engine) {
         }
     }
 
-    // ---- TAA ---------------------------------------------------------
-    if (ImGui::CollapsingHeader("Anti-Aliasing (TAA)", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Checkbox("Enable TAA",  &rs.taa_enabled);
-        if (rs.taa_enabled) {
+    // ---- Anti-Aliasing -----------------------------------------------
+    if (ImGui::CollapsingHeader("Anti-Aliasing", ImGuiTreeNodeFlags_DefaultOpen)) {
+        static const char* aa_items[] = { "None", "MSAA 2x", "MSAA 4x", "MSAA 8x", "TAA" };
+        ImGui::Combo("Mode", (int*)&rs.aa_mode, aa_items, 5);
+        if (rs.aa_mode == AaMode::TAA) {
             ImGui::SliderFloat("Blend Alpha",      &rs.taa_blend,          0.01f, 0.5f,  "%.3f");
             ImGui::SliderFloat("Variance Gamma",   &rs.taa_variance_gamma, 0.5f,  3.0f,  "%.2f");
             ImGui::SliderFloat("Sharpening",       &rs.taa_sharpening,     0.0f,  1.0f,  "%.2f");
@@ -444,8 +461,46 @@ void FlyCamController::draw_hud(Engine& engine) {
         }
     }
 
+    // ---- Performance / Budgeting ------------------------------------
+    if (ImGui::CollapsingHeader("Performance", ImGuiTreeNodeFlags_DefaultOpen)) {
+        // FPS cap
+        static const int   cap_values[] = { 0, 15, 20, 30, 45, 60, 90, 120 };
+        static const char* cap_labels[] = { "Unlimited", "15 fps (low-power)", "20 fps", "30 fps (RDP recommended)", "45 fps", "60 fps", "90 fps", "120 fps" };
+        constexpr int CAP_COUNT = 8;
+        int cap_idx = 0;
+        for (int i = 0; i < CAP_COUNT; ++i) if (cap_values[i] == rs.fps_cap) { cap_idx = i; break; }
+        if (ImGui::Combo("FPS Cap", &cap_idx, cap_labels, CAP_COUNT))
+            rs.fps_cap = cap_values[cap_idx];
+        ImGui::TextDisabled("30 fps frees GPU headroom for Remote Desktop");
+
+        ImGui::Spacing();
+
+        // Texture dimension cap (applies to newly loaded textures only)
+        static const int   dim_values[] = { 0, 512, 1024, 2048, 4096 };
+        static const char* dim_labels[] = { "Unlimited", "512 px", "1024 px", "2048 px", "4096 px" };
+        constexpr int DIM_COUNT = 5;
+        int dim_idx = 0;
+        for (int i = 0; i < DIM_COUNT; ++i) if (dim_values[i] == rs.max_texture_dim) { dim_idx = i; break; }
+        if (ImGui::Combo("Max Tex Dim", &dim_idx, dim_labels, DIM_COUNT))
+            rs.max_texture_dim = dim_values[dim_idx];
+        ImGui::TextDisabled("Down-scales oversized textures on load (reload scene to apply)");
+
+        ImGui::Spacing();
+
+        // VRAM usage readout
+        auto* vk = VulkanRenderer::get();
+        if (vk) {
+            float vram_mb = vk->texture_vram_mb();
+            ImVec4 col = vram_mb < 512.0f  ? ImVec4(0.2f,1.0f,0.3f,1.0f)
+                       : vram_mb < 1024.0f ? ImVec4(1.0f,0.9f,0.1f,1.0f)
+                                           : ImVec4(1.0f,0.3f,0.2f,1.0f);
+            ImGui::Text("Texture VRAM:"); ImGui::SameLine();
+            ImGui::TextColored(col, "%.1f MB", vram_mb);
+        }
+    }
+
     // ---- Debug Views --------------------------------------------
-    if (ImGui::CollapsingHeader("GBuffer Debug")) {
+    if (ImGui::CollapsingHeader("Render Debug")) {
         static const char* dbg_items[] = {
             "Off (normal render)",
             "Albedo",

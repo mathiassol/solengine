@@ -50,6 +50,7 @@ public:
     std::vector<std::string> extra_scenes;
 
     const char* type_name() const override { return "FlyCamController"; }
+    bool        is_clone()  const { return m_is_clone; }
 
     void on_ready  (Engine& engine)          override;
     void on_update (Engine& engine, float dt) override;
@@ -66,7 +67,6 @@ private:
 
     // Input debounce
     float m_scene_cooldown = 0.0f;  // seconds remaining after a scene swap
-    float m_pcss_timer     = 0.0f;  // accumulates time for PCSS sphere animation
 
     // Edge-detect flags
     bool m_tab_prev = false, m_esc_prev = false;

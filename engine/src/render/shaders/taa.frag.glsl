@@ -141,6 +141,11 @@ void main() {
 
     float gamma  = pc.params.z;
     vec3 sigma   = sqrt(max(m2 - m1 * m1, vec3(0.0)));
+    // Prevent AABB collapse: when all 9 neighbours are identical sigma=0 and
+    // clip_aabb always returns m1, killing temporal accumulation entirely.
+    // 0.25 gives a minimum half-width of 0.25*gamma ≈ 0.31 in tonemapped
+    // YCoCg space — enough to keep the converged edge blend inside the box.
+    sigma = max(sigma, vec3(0.25));
     vec3 aabb_min = m1 - gamma * sigma;
     vec3 aabb_max = m1 + gamma * sigma;
 

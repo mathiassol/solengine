@@ -26,6 +26,9 @@ struct VulkanImage {
 // 2D texture from RGBA8 CPU data.  Generates full mip chain.
 VulkanImage create_texture2d(VkContext& ctx, const void* pixels, int width, int height);
 
+// 2D HDR texture from RGBA32F CPU data.  No mips, clamp-to-edge sampler.
+VulkanImage create_texture2d_hdr(VkContext& ctx, const float* pixels_rgba, int width, int height);
+
 // 1×1 fallback texture (e.g., white, flat-normal, white-MR)
 VulkanImage create_texture2d_1x1(VkContext& ctx, uint8_t r, uint8_t g, uint8_t b, uint8_t a);
 
@@ -33,7 +36,8 @@ VulkanImage create_texture2d_1x1(VkContext& ctx, uint8_t r, uint8_t g, uint8_t b
 VulkanImage create_attachment(VkContext& ctx, uint32_t w, uint32_t h,
                               VkFormat format, VkImageUsageFlags usage,
                               VkImageAspectFlags aspect,
-                              bool create_sampler = false);
+                              bool create_sampler = false,
+                              VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT);
 
 // Transition image layout (one-shot cmd)
 void transition_image_layout(VkCommandBuffer cmd, VkImage image,

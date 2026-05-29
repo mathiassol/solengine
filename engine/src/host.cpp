@@ -2,11 +2,17 @@
 #include "sol/engine.h"
 #include "sol/log.h"
 #include "sol/project/project.h"
+#include "sol/input/input_manager.h"
 #include "sol/scene/model_node.h"
+#include "sol/scene/mesh_node.h"
 #include "sol/scene/node3d.h"
 #include "sol/scene/camera3d.h"
+#include "sol/scene/light_node.h"
+#include "sol/scene/node_factory.h"
 #include "sol/scene/scene.h"
 #include "sol/scene/scene_manager.h"
+#include "sol/scene/world_environment.h"
+#include "sol/scene/lua_component.h"
 #include "sol/reflect.h"
 #include "sol/api.h"
 #include "ui/imgui_layer.h"
@@ -23,6 +29,7 @@
 #include <functional>
 #include <limits>
 #include <system_error>
+#include <unordered_map>
 
 #include <imgui.h>
 
@@ -100,12 +107,29 @@ struct EngineHost::Impl {
     EditorGizmoMode gizmo_mode = EditorGizmoMode::Translate;
     bool          gizmo_hovered = false;
     bool          gizmo_active = false;
+    bool          gizmo_was_using     = false;
+    glm::vec3     gizmo_drag_start_pos{};
+    glm::vec3     gizmo_drag_start_rot{};
+    glm::vec3     gizmo_drag_start_scale{};
+    Node3D*       gizmo_drag_node     = nullptr;
+    std::function<void(Node3D*, glm::vec3, glm::vec3, glm::vec3,
+                                 glm::vec3, glm::vec3, glm::vec3)> gizmo_undo_callback;
+    bool          gizmo_local_space   = false;
+    bool          gizmo_visible       = true;   // set false by editor when non-scene tab active
+    std::function<void()> editor_draw_fn;
+
+    // ── Hot Scene Slot state ───────────────────────────────────────────────
+    static constexpr int kNoSlot = -2; // sentinel: no pending slot switch
+    std::unordered_map<int, std::unique_ptr<Scene>> m_scene_slots; // inactive parked scenes
+    int m_next_slot_id    = 0;
+    int m_active_slot_id  = -1;   // -1 = no slot adopted yet
+    int m_pending_slot_id = kNoSlot; // slot to switch to at next tick start
 
     Camera build_editor_camera() const {
         const float yaw_rad = glm::radians(editor_camera_yaw);
         const float pitch_rad = glm::radians(editor_camera_pitch);
         glm::vec3 forward {
-            std::cos(pitch_rad) * std::sin(-yaw_rad),
+            std::cos(pitch_rad) * std::sin(yaw_rad),
             std::sin(pitch_rad),
             std::cos(pitch_rad) * std::cos(yaw_rad)
         };
@@ -160,6 +184,8 @@ bool EngineHost::open(const std::string& project_dir) {
         return false;
     }
 
+    m_impl->engine.input().load_actions(m_impl->project);
+
     m_impl->editor_mode = false;
     m_impl->selected_node = nullptr;
     m_impl->open = true;
@@ -187,7 +213,8 @@ int EngineHost::run() {
         m_impl->project.name.c_str(),
         nullptr,
         [](Engine* e, float dt) {
-            e->scene_manager().update(*e, dt);
+            // Scene update driven by Engine::run() phased tick.
+            (void)e; (void)dt;
         },
         [](Engine* e) {
             e->scene_manager().render(*e);
@@ -232,6 +259,8 @@ bool EngineHost::open_for_editor(void* hwnd, void* hinstance, int w, int h,
     if (!m_impl->engine.init_for_editor(hwnd, hinstance, w, h)) {
         return false;
     }
+
+    m_impl->engine.input().load_actions(m_impl->project);
 
     m_impl->editor_mode = true;
     m_impl->selected_node = nullptr;
@@ -450,11 +479,44 @@ void EngineHost::tick(float dt) {
     if (!m_impl->open) return;
     m_impl->last_dt = dt;
 
+    // ── Hot slot switch (deferred from activate_scene_slot) ──────────────────
+    if (m_impl->m_pending_slot_id != Impl::kNoSlot) {
+        const int target = m_impl->m_pending_slot_id;
+        m_impl->m_pending_slot_id = Impl::kNoSlot;
+
+        if (target != m_impl->m_active_slot_id) {
+            // Cancel any pending scene swap that was queued via load_scene() — it
+            // was for the old tab and would stomp the incoming slot's scene.
+            m_impl->engine.scene_manager().cancel_pending();
+
+            // Wait for all in-flight GPU work before touching scene resources.
+            m_impl->engine.renderer().wait_idle();
+
+            // Park the currently active scene into its slot (raw: no on_destroy).
+            if (m_impl->m_active_slot_id >= 0) {
+                m_impl->m_scene_slots[m_impl->m_active_slot_id] =
+                    m_impl->engine.scene_manager().detach_scene_raw();
+            }
+
+            // Pull the target slot's scene into the SceneManager (raw: no on_ready).
+            auto sit = m_impl->m_scene_slots.find(target);
+            if (sit != m_impl->m_scene_slots.end()) {
+                m_impl->engine.scene_manager().attach_scene_raw(std::move(sit->second));
+                sit->second = nullptr; // slot is now "active" (scene lives in SceneManager)
+            }
+
+            m_impl->m_active_slot_id  = target;
+            m_impl->selected_node     = nullptr;
+            m_impl->gizmo_drag_node   = nullptr;
+        }
+    }
+
     ImGuiLayer* imgui_layer = m_impl->engine.imgui_ptr();
     const bool editor_imgui = imgui_layer && imgui_layer->initialized() && imgui_layer->is_editor_mode();
 
-    // Start ImGui frame BEFORE on_update so scene nodes (e.g. FlyCamController)
-    // can safely make ImGui calls during their update pass.
+    // Start the editor ImGui frame BEFORE scene update so that any ImGui calls
+    // made by game nodes during update/render land inside a valid frame and do
+    // not crash. The frame is submitted (Render) inside the render lambda.
     if (editor_imgui) {
         ImGui::SetCurrentContext(m_impl->engine.imgui_context());
         imgui_layer->begin_frame_editor(m_impl->viewport_w, m_impl->viewport_h, dt);
@@ -462,7 +524,7 @@ void EngineHost::tick(float dt) {
 
     m_impl->engine.tick_one_frame(dt,
         [this] {
-            m_impl->engine.scene_manager().update(m_impl->engine, m_impl->engine.delta_time());
+            // Scene update driven by tick_one_frame phased tick.
         },
         [this, editor_imgui, imgui_layer] {
             m_impl->engine.scene_manager().render(m_impl->engine);
@@ -472,7 +534,10 @@ void EngineHost::tick(float dt) {
             }
 
             if (editor_imgui) {
-                if (m_impl->selected_node) {
+                if (m_impl->editor_draw_fn) {
+                    m_impl->editor_draw_fn();
+                }
+                if (m_impl->selected_node && m_impl->gizmo_visible) {
                     render_editor_gizmo_();
                 }
                 imgui_layer->end_frame();
@@ -489,6 +554,7 @@ void EngineHost::close() {
     }
     m_impl->engine.shutdown();
     m_impl->selected_node = nullptr;
+    m_impl->gizmo_drag_node = nullptr;
     m_impl->editor_mode = false;
     m_impl->open = false;
 }
@@ -511,19 +577,30 @@ bool EngineHost::load_scene(const std::string& scene_path) {
         return false;
     }
 
+    SOL_INFO("EngineHost::load_scene: requested '" + scene_path + "'");
+
     std::error_code ec;
     if (!std::filesystem::exists(scene_path, ec)) {
-        SOL_ERROR("EngineHost: scene file not found: " + scene_path);
+        SOL_ERROR("EngineHost: scene file not found: '" + scene_path + "' (cwd: " +
+                  std::filesystem::current_path(ec).string() + ")");
         return false;
     }
 
     auto scene = Scene::load(scene_path, m_impl->engine);
     if (!scene) {
+        SOL_ERROR("EngineHost: Scene::load failed for '" + scene_path + "'");
         return false;
     }
 
-    m_impl->engine.scene_manager().set_scene(std::move(scene), m_impl->engine);
+    SOL_INFO("EngineHost: scene '" + scene->name + "' loaded OK, queuing deferred swap");
+
+    // Defer the scene swap to the start of the next tick (flush_pending),
+    // so we are never mid-frame (between begin_frame/end_frame) when GPU
+    // resources from the old scene are destroyed.  Clearing selections
+    // immediately is safe — they will just be null for one frame.
+    m_impl->engine.scene_manager().request_scene(std::move(scene));
     m_impl->selected_node = nullptr;
+    m_impl->gizmo_drag_node = nullptr;
     return true;
 }
 
@@ -558,6 +635,116 @@ Node* EngineHost::instantiate_model(const std::string& path, Node* parent) {
     return raw;
 }
 
+Node* EngineHost::create_node(const std::string& type, Node* parent) {
+    if (!m_impl->open) return nullptr;
+    Scene* scene = m_impl->engine.scene_manager().current();
+    if (!scene || !scene->root()) return nullptr;
+
+    Node* target = parent ? parent : scene->root();
+    std::unique_ptr<Node> node = NodeFactory::instance().create(type);
+    if (!node) {
+        SOL_WARN("create_node: unknown type '" + type + "'");
+        return nullptr;
+    }
+
+    node->name = type;
+    Node* raw = node.get();
+    target->add_child(std::move(node));
+    raw->on_ready(m_impl->engine);
+    return raw;
+}
+
+bool EngineHost::remove_node(Node* node) {
+    if (!m_impl->open || !node) return false;
+    Scene* scene = m_impl->engine.scene_manager().current();
+    if (!scene || !scene->root() || node == scene->root()) return false;
+
+    if (m_impl->selected_node) {
+        for (Node* cur = m_impl->selected_node; cur; cur = cur->parent()) {
+            if (cur == node) {
+                m_impl->selected_node = nullptr;
+                break;
+            }
+        }
+    }
+    if (m_impl->gizmo_drag_node) {
+        for (Node* cur = m_impl->gizmo_drag_node; cur; cur = cur->parent()) {
+            if (cur == node) {
+                m_impl->gizmo_drag_node = nullptr;
+                break;
+            }
+        }
+    }
+
+    Node* parent = node->parent();
+    return parent ? parent->remove_child(node) : false;
+}
+
+void EngineHost::rename_node(Node* node, const std::string& new_name) {
+    if (node) node->name = new_name;
+}
+
+float EngineHost::frame_fps() const {
+    if (!m_impl->open || m_impl->last_dt <= 0.0f) return 0.0f;
+    return 1.0f / m_impl->last_dt;
+}
+
+int EngineHost::frame_draw_calls() const {
+    if (!m_impl->open) return 0;
+    return m_impl->engine.renderer().draw_call_count();
+}
+
+void EngineHost::set_gizmo_space(bool local) {
+    m_impl->gizmo_local_space = local;
+}
+
+bool EngineHost::gizmo_space_local() const {
+    return m_impl->gizmo_local_space;
+}
+
+void EngineHost::set_gizmo_undo_callback(
+    std::function<void(Node3D*, glm::vec3, glm::vec3, glm::vec3,
+                                glm::vec3, glm::vec3, glm::vec3)> cb) {
+    m_impl->gizmo_undo_callback = std::move(cb);
+}
+
+Node* EngineHost::duplicate_node(Node* node) {
+    if (!node || !m_impl->open) return nullptr;
+    Scene* scene = m_impl->engine.scene_manager().current();
+    if (!scene || !scene->root()) return nullptr;
+    Node* parent = node->parent();
+    if (!parent) return nullptr;
+
+    const std::string type = node->type_name();
+    std::unique_ptr<Node> new_unique = NodeFactory::instance().create(type);
+    if (!new_unique) return nullptr;
+
+    Node* new_node = new_unique.get();
+    new_node->name = node->name + "_copy";
+    parent->add_child(std::move(new_unique));
+
+    const TypeDesc* desc = ComponentRegistry::instance().find(type);
+    if (desc) {
+        for (const auto& field : desc->fields) {
+            if (field.type == FieldType::SectionHeader) continue;
+            void* src = field.ptr(node);
+            if (src) set_field(new_node, field.name, src);
+        }
+    }
+    new_node->script_path = node->script_path;
+
+    // Duplicate attached LuaComponents.
+    for (const auto& comp : node->components()) {
+        if (std::strcmp(comp->component_type(), "LuaComponent") == 0) {
+            if (const auto* lc = dynamic_cast<const LuaComponent*>(comp.get()))
+                new_node->add_component(std::make_unique<LuaComponent>(lc->script_path()));
+        }
+    }
+
+    new_node->on_ready(m_impl->engine);
+    return new_node;
+}
+
 bool EngineHost::save_scene(const std::string& path) {
     if (!m_impl->open) return false;
     Scene* scene = m_impl->engine.scene_manager().current();
@@ -579,12 +766,114 @@ bool EngineHost::save_scene(const std::string& path) {
     return ok;
 }
 
+std::string EngineHost::scene_state_to_string() const {
+    if (!m_impl->open) return {};
+    Scene* scene = m_impl->engine.scene_manager().current();
+    if (!scene) return {};
+    return scene->save_to_string();
+}
+
+bool EngineHost::load_scene_from_string(const std::string& json_str, const std::string& original_path) {
+    if (!m_impl->open) return false;
+    if (json_str.empty()) {
+        // Restore to empty scene
+        auto empty = std::make_unique<Scene>();
+        empty->name = "Untitled";
+        m_impl->engine.scene_manager().request_scene(std::move(empty));
+        m_impl->selected_node  = nullptr;
+        m_impl->gizmo_drag_node = nullptr;
+        return true;
+    }
+    auto scene = Scene::load_from_string(json_str, m_impl->engine);
+    if (!scene) return false;
+    if (!original_path.empty()) scene->path = original_path;
+    m_impl->engine.scene_manager().request_scene(std::move(scene));
+    m_impl->selected_node  = nullptr;
+    m_impl->gizmo_drag_node = nullptr;
+    return true;
+}
+
+// ── Hot Scene Slot API ──────────────────────────────────────────────────────
+
+int EngineHost::create_scene_slot() {
+    const int id = m_impl->m_next_slot_id++;
+    if (m_impl->m_active_slot_id < 0) {
+        // First slot: adopt whatever is already in the SceneManager.
+        m_impl->m_active_slot_id = id;
+        m_impl->m_scene_slots[id] = nullptr; // scene lives in SceneManager
+    } else {
+        // Subsequent slot: starts empty.
+        m_impl->m_scene_slots[id] = nullptr;
+    }
+    return id;
+}
+
+void EngineHost::destroy_scene_slot(int slot_id) {
+    if (!m_impl->open) return;
+    if (slot_id == m_impl->m_active_slot_id) {
+        m_impl->engine.renderer().wait_idle();
+        m_impl->engine.scene_manager().unload(m_impl->engine);
+        m_impl->m_scene_slots.erase(slot_id);
+        m_impl->m_active_slot_id = -1;
+        m_impl->selected_node   = nullptr;
+        m_impl->gizmo_drag_node = nullptr;
+    } else {
+        auto it = m_impl->m_scene_slots.find(slot_id);
+        if (it != m_impl->m_scene_slots.end()) {
+            if (it->second)
+                it->second->on_destroy(m_impl->engine);
+            m_impl->m_scene_slots.erase(it);
+        }
+    }
+}
+
+bool EngineHost::load_scene_into_slot(int slot_id, const std::string& path) {
+    if (!m_impl->open) return false;
+    if (slot_id == m_impl->m_active_slot_id) {
+        return load_scene(path);
+    }
+    auto it = m_impl->m_scene_slots.find(slot_id);
+    if (it == m_impl->m_scene_slots.end()) {
+        SOL_WARN("EngineHost::load_scene_into_slot: unknown slot " + std::to_string(slot_id));
+        return false;
+    }
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) {
+        SOL_ERROR("EngineHost::load_scene_into_slot: file not found: " + path);
+        return false;
+    }
+    if (it->second) it->second->on_destroy(m_impl->engine);
+    auto scene = Scene::load(path, m_impl->engine);
+    if (!scene) {
+        SOL_ERROR("EngineHost::load_scene_into_slot: failed to load: " + path);
+        it->second = nullptr;
+        return false;
+    }
+    scene->on_ready(m_impl->engine);
+    it->second = std::move(scene);
+    return true;
+}
+
+void EngineHost::activate_scene_slot(int slot_id) {
+    if (!m_impl->open) return;
+    if (!m_impl->m_scene_slots.count(slot_id)) {
+        SOL_WARN("EngineHost::activate_scene_slot: unknown slot " + std::to_string(slot_id));
+        return;
+    }
+    m_impl->m_pending_slot_id = slot_id;
+}
+
+int EngineHost::active_scene_slot() const {
+    return m_impl->m_active_slot_id;
+}
+
 void EngineHost::set_field(Node* node, const std::string& field_name, const void* data) {
     if (!node || !data) return;
     const TypeDesc* desc = ComponentRegistry::instance().find(node->type_name());
     if (!desc) return;
     for (const auto& field : desc->fields) {
         if (field.name != field_name) continue;
+        if (field.type == FieldType::SectionHeader) continue;
         void* ptr = field.ptr(node);
         switch (field.type) {
             case FieldType::Float:
@@ -614,6 +903,25 @@ void EngineHost::set_field(Node* node, const std::string& field_name, const void
     }
 }
 
+void EngineHost::set_editor_draw_fn(std::function<void()> fn) {
+    m_impl->editor_draw_fn = std::move(fn);
+}
+
+void EngineHost::set_gizmo_visible(bool v) {
+    m_impl->gizmo_visible = v;
+}
+
+void EngineHost::imgui_add_text(const char* utf8) {
+    if (!utf8 || !m_impl->open || !m_impl->engine.imgui_context()) return;
+    ImGui::SetCurrentContext(m_impl->engine.imgui_context());
+    ImGui::GetIO().AddInputCharactersUTF8(utf8);
+}
+
+ImGuiContext* EngineHost::imgui_get_context() const {
+    if (!m_impl->open) return nullptr;
+    return m_impl->engine.imgui_context();
+}
+
 void EngineHost::render_editor_gizmo_() {
     m_impl->gizmo_hovered = false;
     m_impl->gizmo_active = false;
@@ -630,7 +938,8 @@ void EngineHost::render_editor_gizmo_() {
     const Camera& cam = renderer.camera();
     glm::mat4 view = cam.view();
     glm::mat4 proj = cam.proj(aspect, true);
-    proj[1][1] *= -1.0f;
+    // Note: do NOT flip proj[1][1] — ImGuizmo expects OpenGL convention (Y-up NDC).
+    // The Vulkan Y-flip is a rendering pipeline concern only.
 
     glm::mat4 world = node3d->global_transform();
 
@@ -655,7 +964,7 @@ void EngineHost::render_editor_gizmo_() {
         glm::value_ptr(view),
         glm::value_ptr(proj),
         op,
-        ImGuizmo::WORLD,
+        m_impl->gizmo_local_space ? ImGuizmo::LOCAL : ImGuizmo::WORLD,
         glm::value_ptr(world),
         nullptr);
 
@@ -679,8 +988,35 @@ void EngineHost::render_editor_gizmo_() {
         node3d->scale = scale;
     }
 
+    // Gizmo drag start detection
+    if (ImGuizmo::IsUsing() && !m_impl->gizmo_was_using) {
+        m_impl->gizmo_drag_start_pos   = node3d->position;
+        m_impl->gizmo_drag_start_rot   = node3d->rotation;
+        m_impl->gizmo_drag_start_scale = node3d->scale;
+        m_impl->gizmo_drag_node        = node3d;
+        m_impl->gizmo_was_using        = true;
+    }
+
+    // Gizmo drag end detection
+    if (!ImGuizmo::IsUsing() && m_impl->gizmo_was_using) {
+        if (m_impl->gizmo_undo_callback && m_impl->gizmo_drag_node) {
+            m_impl->gizmo_undo_callback(
+                m_impl->gizmo_drag_node,
+                m_impl->gizmo_drag_start_pos,  m_impl->gizmo_drag_start_rot,  m_impl->gizmo_drag_start_scale,
+                m_impl->gizmo_drag_node->position, m_impl->gizmo_drag_node->rotation, m_impl->gizmo_drag_node->scale);
+        }
+        m_impl->gizmo_was_using = false;
+        m_impl->gizmo_drag_node = nullptr;
+    }
+
     m_impl->gizmo_hovered = ImGuizmo::IsOver();
     m_impl->gizmo_active = ImGuizmo::IsUsing();
+}
+
+void EngineHost::apply_mesh_material_textures(Node* node) {
+    if (!m_impl->open || !node) return;
+    if (auto* mn = dynamic_cast<MeshNode*>(node))
+        mn->apply_material_textures(m_impl->engine);
 }
 
 } // namespace sol

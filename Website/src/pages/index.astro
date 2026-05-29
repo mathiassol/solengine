@@ -8,12 +8,12 @@ import BaseLayout from '../layouts/BaseLayout.astro';
 >
 	<section class="hero">
 		<div class="wrap">
-			<p class="eyebrow">ENGINE</p>
-			<h1>Another GameEngine.<br />Not Preformant.</h1>
-			<p class="sub">SolEngine is a minimal, modular engine for modern workflows. No bloat. Full control.</p>
+			<p class="eyebrow">C++20 / VULKAN / LUA</p>
+			<h1>A game engine<br />you can own.</h1>
+			<p class="sub">SolEngine is a Vulkan-based game engine with a full Qt6 editor, Lua scripting, PBR rendering, and a clean node-tree scene system.</p>
 			<div class="actions">
-				<a href="/download" class="btn-primary">Download</a>
-				<a href="/docs/" class="btn-ghost">Documentation &rarr;</a>
+				<a href="/docs/" class="btn-primary">Documentation</a>
+				<a href="https://github.com/mathiassol/solengine" class="btn-ghost">GitHub &rarr;</a>
 			</div>
 		</div>
 	</section>
@@ -23,20 +23,28 @@ import BaseLayout from '../layouts/BaseLayout.astro';
 			<p class="eyebrow">FEATURES</p>
 			<div class="grid">
 				<div class="cell">
-					<h3>Performance</h3>
-					<p>Optimized core with minimal allocations and maximum throughput.</p>
+					<h3>Vulkan PBR Renderer</h3>
+					<p>Cook-Torrance BRDF, IBL, CSM shadows, SSAO, SSR, TAA, bloom, volumetric fog — all in one pipeline.</p>
 				</div>
 				<div class="cell">
-					<h3>Modular</h3>
-					<p>Use only the components you need. Nothing extra is loaded.</p>
+					<h3>Qt6 + ImGui Editor</h3>
+					<p>Scene hierarchy, inspector, material editor, script editor, asset browser, world settings — fully integrated.</p>
 				</div>
 				<div class="cell">
-					<h3>Cross-platform</h3>
-					<p>Consistent behavior across Windows, macOS, and Linux.</p>
+					<h3>Lua Scripting</h3>
+					<p>Attach scripts to any node. Full access to physics raycasts, node instantiation, input, audio, and collision callbacks.</p>
 				</div>
 				<div class="cell">
-					<h3>Self-contained</h3>
-					<p>Zero runtime dependencies. One binary, no installer required.</p>
+					<h3>17 Node Types</h3>
+					<p>MeshNode, ModelNode, lights, rigid/character/static bodies, Area3D, audio players, script nodes, and more.</p>
+				</div>
+				<div class="cell">
+					<h3>Physics & Audio</h3>
+					<p>Jolt Physics for rigid bodies, character controllers, and raycasts. miniaudio for 3D positional sound.</p>
+				</div>
+				<div class="cell">
+					<h3>Open & Hackable</h3>
+					<p>MIT licensed, CMake-based, no magic. The engine is a DLL — swap, extend, or replace any subsystem.</p>
 				</div>
 			</div>
 		</div>

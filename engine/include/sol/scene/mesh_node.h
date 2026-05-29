@@ -35,6 +35,20 @@ public:
 
     Mesh* mesh() const { return m_mesh.get(); }
 
+    // Material texture override paths (relative to project root)
+    std::string mat_albedo_path;
+    std::string mat_normal_path;
+    std::string mat_mr_path;
+    std::string mat_emissive_path;
+
+    // Reload owned textures from mat_*_path fields. No-op for empty paths.
+    void apply_material_textures(Engine& engine);
+
+    // Sub-mesh access (for GLB files loaded via mesh_path)
+    int      submesh_count()              const { return (int)m_submeshes.size(); }
+    Material* submesh_material(int idx)         { return (idx>=0 && idx<(int)m_submeshes.size()) ? &m_submeshes[idx].mat : nullptr; }
+    const Material* submesh_material(int idx) const { return (idx>=0 && idx<(int)m_submeshes.size()) ? &m_submeshes[idx].mat : nullptr; }
+
 private:
     // Primitive mesh path
     std::shared_ptr<Mesh> m_mesh;
@@ -50,6 +64,12 @@ private:
 
     // Physics
     std::vector<uint32_t> m_body_ids;
+
+    // Owned textures loaded from mat_*_path fields
+    std::shared_ptr<Texture> m_owned_albedo;
+    std::shared_ptr<Texture> m_owned_normal;
+    std::shared_ptr<Texture> m_owned_mr;
+    std::shared_ptr<Texture> m_owned_emissive;
 };
 
 } // namespace sol

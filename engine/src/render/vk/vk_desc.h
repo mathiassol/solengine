@@ -48,10 +48,10 @@ public:
     VkDescriptorSetLayout frame_layout()    const { return m_frame_layout; }
     // Set 1 layout
     VkDescriptorSetLayout material_layout() const { return m_mat_layout; }
-    // Fullscreen/post layout (no material, just 2 samplers)
+    // Fullscreen/post layout (no material, just HDR + bloom + SSR samplers)
     VkDescriptorSetLayout post_layout()     const { return m_post_layout; }
-    // Deferred lighting input layout (gbuf0-3 + depth + ssao)
-    VkDescriptorSetLayout deferred_input_layout() const { return m_deferred_layout; }
+    // Forward+ input layout (ssao + ibl_irr + ibl_pref + ibl_lut + depth_pre)
+    VkDescriptorSetLayout fwd_plus_input_layout() const { return m_fwd_plus_input_layout; }
 
     // Allocate + write set 0 for a frame (UBO + shadow map + raw shadow map + VSM)
     VkDescriptorSet alloc_frame_set(VkDevice device,
@@ -67,28 +67,26 @@ public:
                                        VkImageView mr,     VkSampler mr_samp,
                                        VkImageView emissive, VkSampler emissive_samp);
 
-    // Allocate + write set for fullscreen post (1 HDR + 1 bloom)
+    // Allocate + write set for fullscreen post (HDR + bloom + SSR)
     VkDescriptorSet alloc_post_set(VkDevice device,
                                    VkImageView hdr,   VkSampler hdr_samp,
-                                   VkImageView bloom, VkSampler bloom_samp);
+                                   VkImageView bloom, VkSampler bloom_samp,
+                                   VkImageView ssr,   VkSampler ssr_samp);
 
     // Allocate + write set for a single-sampler pass (bloom bright extract, blur)
     VkDescriptorSet alloc_single_sampler_set(VkDevice device,
                                               VkImageView view, VkSampler samp);
 
-    // Allocate + write deferred input set (gbuf0-3 + depth + ssao + shadow_accum + ibl_irr + ibl_pref + ibl_lut)
-    VkDescriptorSet alloc_deferred_input_set(VkDevice device,
-                                              VkImageView gbuf0, VkSampler s0,
-                                              VkImageView gbuf1, VkSampler s1,
-                                              VkImageView gbuf2, VkSampler s2,
-                                              VkImageView gbuf3, VkSampler s3,
-                                              VkImageView depth,        VkSampler s_depth,
-                                              VkImageView ssao,         VkSampler s_ssao,
-                                              VkImageView shadow_accum, VkSampler s_accum,
-                                              VkImageView ibl_irr,      VkSampler s_irr,
-                                              VkImageView ibl_pref,     VkSampler s_pref,
-                                              VkImageView ibl_lut,      VkSampler s_lut);
+    // Allocate + write set for forward+ inputs (ssao + ibl_irr + ibl_pref + ibl_lut + depth_pre)
+    VkDescriptorSet alloc_fwd_plus_set(VkDevice device,
+                                       VkImageView ssao,      VkSampler s_ssao,
+                                       VkImageView ibl_irr,   VkSampler s_irr,
+                                       VkImageView ibl_pref,  VkSampler s_pref,
+                                       VkImageView ibl_lut,   VkSampler s_lut,
+                                       VkImageView depth_pre, VkSampler s_depth);
 
+    VkDescriptorSetLayout ssr_ray_input_layout()      const { return m_ssr_ray_input_layout; }
+    VkDescriptorSetLayout ssr_temporal_input_layout() const { return m_ssr_temporal_input_layout; }
     VkDescriptorSetLayout single_sampler_layout() const { return m_single_samp_layout; }
 
     // SSAO input layout (gbuf1 normals, depth, noise)
@@ -109,6 +107,17 @@ public:
                                          VkImageView history, VkSampler s_hist,
                                          VkImageView depth,   VkSampler s_depth);
 
+    VkDescriptorSet alloc_ssr_ray_set(VkDevice device,
+                                      VkImageView scene,     VkSampler s_scene,
+                                      VkImageView depth,     VkSampler s_depth,
+                                      VkImageView normals,   VkSampler s_normals,
+                                      VkImageView roughness, VkSampler s_roughness);
+
+    VkDescriptorSet alloc_ssr_temporal_set(VkDevice device,
+                                           VkImageView ssr_raw, VkSampler s_ssr_raw,
+                                           VkImageView history, VkSampler s_history,
+                                           VkImageView depth,   VkSampler s_depth);
+
     void reset_pool(VkDevice device, uint32_t frame_idx); // free all transient sets for the given frame slot
 
 private:
@@ -116,9 +125,11 @@ private:
     VkDescriptorSetLayout m_mat_layout        = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_post_layout       = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_single_samp_layout= VK_NULL_HANDLE;
-    VkDescriptorSetLayout m_deferred_layout   = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_fwd_plus_input_layout = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_ssao_input_layout = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_taa_input_layout  = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_ssr_ray_input_layout      = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_ssr_temporal_input_layout = VK_NULL_HANDLE;
     std::array<VkDescriptorPool, 2> m_pools   = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     uint32_t              m_active_pool_idx   = 0u;
 };

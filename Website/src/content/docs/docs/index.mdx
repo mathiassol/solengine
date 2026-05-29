@@ -1,28 +1,45 @@
 ---
 title: Introduction
-description: An overview of SolEngine and what it can do.
+description: An overview of SolEngine — a C++20 / Vulkan game engine with Qt6 editor and Lua scripting.
 ---
 
 # Introduction
 
-SolEngine is a high-performance, minimal engine built for modern workflows.
-This documentation covers everything from installation to advanced usage.
+**SolEngine** is a C++20 game engine built on Vulkan with a Qt6 + ImGui editor and Lua scripting.
+It is designed to be fully understandable, hackable, and fast — without the abstraction walls of Unity or Unreal.
 
-## What is SolEngine?
+## What you get
 
-SolEngine provides a lean foundation for building fast, efficient applications
-without the overhead of bloated frameworks. It is modular by design — use only
-what you need.
+| Layer | Tech |
+|-------|------|
+| **Renderer** | Vulkan — PBR, IBL, CSM shadows, SSAO, SSR, TAA, Bloom |
+| **Editor** | Qt6 + ImGui — hierarchy, inspector, material editor, script editor |
+| **Scripting** | Lua 5.4 (LuaBridge) — full scene, physics, audio, and input access |
+| **Physics** | Jolt Physics — raycasts, rigid/character bodies, Area3D callbacks |
+| **Audio** | miniaudio — 3D positional, OGG/WAV/MP3 |
+| **Scenes** | Node-tree, `.solscene` JSON, ResourceCache |
 
-## Key Features
+## Node Types
 
-- **Fast** — Optimized core with minimal overhead
-- **Modular** — Pick the components that suit your project
-- **Cross-platform** — Windows, macOS, and Linux
-- **Zero dependencies** — Self-contained and easy to distribute
+SolEngine has 17 built-in node types across 4 categories:
+
+- **Spatial** — `Node3D`, `MeshNode`, `ModelNode`, `Camera3D`
+- **Lighting** — `DirectionalLight`, `PointLight`
+- **Physics** — `RigidBody3D`, `StaticBody3D`, `CharacterBody3D`, `CollisionShape3D`, `Area3D`
+- **Logic** — `ScriptNode`, `LuaComponent`, `AudioStreamPlayer`, `AudioStreamPlayer3D`, `WorldEnvironment`, `SceneInstance`
+
+## Architecture
+
+```
+sol_editor.exe   — Qt6 editor (loads sol_engine.dll)
+sol_engine.dll   — all subsystems: renderer, physics, audio, Lua, scene
+```
+
+Game logic lives in Lua scripts attached to scene nodes — no engine recompilation needed.
 
 ## Next Steps
 
-- [Getting Started](/docs/getting-started/) — Install and run your first project
-- [Download](/download) — Grab the latest release
-- [GitHub](https://github.com/mathiassol/solengine) — Browse the source
+- [Getting Started](/docs/getting-started/) — Build from source and run the demo
+- [Lua API Reference](/docs/reference/lua-api/) — Script the engine with Lua
+- [Node Types Reference](/docs/reference/node-types/) — Full node type catalogue
+- [GitHub](https://github.com/mathiassol/solengine) — Source, issues, contributions

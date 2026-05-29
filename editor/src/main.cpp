@@ -1,9 +1,11 @@
 #include <QApplication>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QFont>
 #include <QString>
 #include "main_window.h"
+#include "project_launcher.h"
 
 int main(int argc, char* argv[])
 {
@@ -29,8 +31,14 @@ int main(int argc, char* argv[])
             break;
         }
     }
-    if (projectDir.isEmpty())
-        projectDir = QDir::currentPath();
+
+    // If no valid project was given on the command line, show the launcher
+    if (projectDir.isEmpty() || !QFileInfo(projectDir + "/project.sol").exists()) {
+        ProjectLauncherDialog launcher;
+        if (launcher.exec() != QDialog::Accepted)
+            return 0;  // user cancelled
+        projectDir = launcher.selectedProject();
+    }
 
     MainWindow w(projectDir);
     w.show();

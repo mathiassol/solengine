@@ -77,7 +77,7 @@ FetchContent_Declare(JoltPhysics
 # ---- Dear ImGui (compiled as a small static lib — GLFW + Vulkan backends) ----
 FetchContent_Declare(imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
-    GIT_TAG        v1.91.0
+    GIT_TAG        v1.91.0-docking
     GIT_SHALLOW    TRUE)
 
 # ---- cgltf (single-header GLB/GLTF loader) ----
@@ -100,9 +100,25 @@ FetchContent_Declare(stb
     GIT_TAG        master
     GIT_SHALLOW    TRUE)
 
+# ---- ufbx (FBX loader, single C source) ----
+FetchContent_Declare(ufbx
+    GIT_REPOSITORY https://github.com/ufbx/ufbx.git
+    GIT_TAG        v0.14.3
+    GIT_SHALLOW    TRUE)
+
 message(STATUS "Fetching dependencies (first run downloads a lot)...")
 FetchContent_MakeAvailable(glm entt glfw VulkanHeaders volk vma glslang
-                           JoltPhysics imgui cgltf json stb)
+                           JoltPhysics imgui cgltf json stb ufbx)
+
+# ---- miniaudio (single-header audio library) ----
+FetchContent_Declare(miniaudio
+    GIT_REPOSITORY https://github.com/mackron/miniaudio.git
+    GIT_TAG        0.11.21
+    GIT_SHALLOW    TRUE)
+FetchContent_MakeAvailable(miniaudio)
+
+add_library(miniaudio_iface INTERFACE)
+target_include_directories(miniaudio_iface INTERFACE ${miniaudio_SOURCE_DIR})
 
 # ---- Vulkan-Headers: expose as an INTERFACE target ----
 if(NOT TARGET Vulkan::Headers)
@@ -154,3 +170,36 @@ target_include_directories(cgltf INTERFACE ${cgltf_SOURCE_DIR})
 add_library(stb_iface INTERFACE)
 target_include_directories(stb_iface INTERFACE ${stb_SOURCE_DIR})
 
+# ---- ufbx (FBX loader, single C source) ----
+add_library(ufbx_iface STATIC ${ufbx_SOURCE_DIR}/ufbx.c)
+target_include_directories(ufbx_iface PUBLIC ${ufbx_SOURCE_DIR})
+if(MSVC)
+    target_compile_options(ufbx_iface PRIVATE /W0)
+else()
+    target_compile_options(ufbx_iface PRIVATE -w)
+endif()
+
+# ---- Lua 5.4 (scripting VM) ----
+FetchContent_Declare(lua_src
+    URL https://www.lua.org/ftp/lua-5.4.7.tar.gz
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+FetchContent_MakeAvailable(lua_src)
+
+# ---- LuaBridge3 (header-only Lua bindings) ----
+FetchContent_Declare(luabridge3
+    GIT_REPOSITORY https://github.com/kunitoki/LuaBridge3.git
+    GIT_TAG        master
+    GIT_SHALLOW    TRUE)
+FetchContent_MakeAvailable(luabridge3)
+
+# Lua ships no CMakeLists — build it manually
+file(GLOB LUA_C_SOURCES "${lua_src_SOURCE_DIR}/src/*.c")
+list(FILTER LUA_C_SOURCES EXCLUDE REGEX "(lua\\.c|luac\\.c)$")
+add_library(lua54 STATIC ${LUA_C_SOURCES})
+target_include_directories(lua54 PUBLIC "${lua_src_SOURCE_DIR}/src")
+if(MSVC)
+    target_compile_options(lua54 PRIVATE /W0)
+    target_compile_definitions(lua54 PRIVATE _CRT_SECURE_NO_WARNINGS)
+else()
+    target_compile_options(lua54 PRIVATE -w)
+endif()

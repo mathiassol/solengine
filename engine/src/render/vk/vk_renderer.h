@@ -9,6 +9,8 @@
 #include "vk_image.h"
 
 #include <glm/glm.hpp>
+#include <chrono>
+#include <atomic>
 #include <vector>
 
 struct GLFWwindow;
@@ -29,6 +31,7 @@ public:
     void end_frame() override;
     void resize(int w, int h) override;
     void submit(const Mesh& mesh, const Material& mat, const glm::mat4& transform) override;
+    void wait_idle() override;
 
     void* alloc_mesh(const Vertex* verts, size_t vertex_count, const uint32_t* indices, size_t index_count);
     void  free_mesh(void* gpu);
@@ -43,6 +46,15 @@ public:
 
     void request_ibl_rebuild() { m_ibl_dirty = true; }
     bool ibl_ready()    const  { return m_ibl_ready; }
+
+    void set_hdr_sky(const std::string& path) override;
+    int draw_call_count() const override;
+
+    // Approximate texture VRAM consumed (includes full mip chain).
+    float texture_vram_mb() const {
+        return static_cast<float>(m_texture_vram_bytes.load(std::memory_order_relaxed))
+               / (1024.0f * 1024.0f);
+    }
 
 private:
     struct DrawItem;
@@ -65,14 +77,16 @@ private:
     bool update_frame_ubo_(uint32_t frame_idx, vk::FrameUBO& out_ubo, glm::vec3& out_shadow_dir);
     void record_shadow_pass_(VkCommandBuffer cmd, VkDescriptorSet frame_set);
     void record_vsm_shadow_pass_(VkCommandBuffer cmd, VkDescriptorSet frame_set);
-    void record_gbuf_pass_(VkCommandBuffer cmd, VkDescriptorSet frame_set);
-    void record_light_pass_(VkCommandBuffer cmd, VkDescriptorSet frame_set, uint32_t taa_read = 0, uint32_t taa_write = 1);
-    void record_forward_pass_(VkCommandBuffer cmd, VkDescriptorSet frame_set);
+    void record_depth_pre_pass_(VkCommandBuffer cmd, VkDescriptorSet frame_set);
+    void record_fwd_plus_pass_(VkCommandBuffer cmd, VkDescriptorSet frame_set);
+    void rebuild_forward_();
+    VkSampleCountFlagBits get_sample_count_() const;
     void record_bloom_passes_(VkCommandBuffer cmd, const vk::VulkanImage& hdr_src);
-    void record_tonemap_pass_(VkCommandBuffer cmd, uint32_t image_idx, const vk::VulkanImage& hdr_src);
+    void record_tonemap_pass_(VkCommandBuffer cmd, uint32_t image_idx, const vk::VulkanImage& hdr_src, const vk::VulkanImage& ssr_src);
     void record_taa_pass_(VkCommandBuffer cmd, VkDescriptorSet frame_set, uint32_t taa_read, uint32_t taa_write);
     void record_imgui_pass_(VkCommandBuffer cmd, uint32_t image_idx);
     void record_ssao_passes_(VkCommandBuffer cmd, VkDescriptorSet frame_set);
+    void record_ssr_passes_(VkCommandBuffer cmd, VkDescriptorSet frame_set);
 
     Window* m_window = nullptr;
     vk::VkContext m_ctx;
@@ -97,11 +111,11 @@ private:
     bool             m_vsm_mode            = false;
     vk::VulkanImage m_hdr_color;
     vk::VulkanImage m_hdr_depth;
-    vk::VulkanImage m_gbuf0;   // albedo + ao
-    vk::VulkanImage m_gbuf1;   // world normal + geom flag
-    vk::VulkanImage m_gbuf2;   // metallic + roughness + lit flag
-    vk::VulkanImage m_gbuf3;   // emissive
-    VkSampler       m_hdr_depth_sampler = VK_NULL_HANDLE;  // non-compare sampler for depth read in deferred
+    vk::VulkanImage m_gbuf1;      // world normal + geom flag (written by depth pre-pass, read by SSAO)
+    vk::VulkanImage m_gbuf_roughness;  // per-pixel roughness, written by depth_pre_pass, read by SSR
+    vk::VulkanImage m_fwd_depth;  // forward rendering depth buffer (per AA mode sample count)
+    vk::VulkanImage m_msaa_color; // MSAA HDR color buffer (empty/unused when not MSAA)
+    VkSampler       m_hdr_depth_sampler = VK_NULL_HANDLE;  // non-compare sampler for depth read
     vk::VulkanImage m_bloom_a;
     vk::VulkanImage m_bloom_b;
     vk::VulkanImage m_fallback_white;
@@ -113,11 +127,13 @@ private:
     vk::VulkanImage  m_ssao_blur;
     vk::VulkanImage  m_ssao_noise;
 
-    vk::VulkanImage m_shadow_accum[2];           // ping-pong shadow accumulation (R16_SFLOAT)
-    VkSampler       m_shadow_accum_sampler = VK_NULL_HANDLE;
-    uint32_t        m_taa_idx             = 0;   // incremented each frame for shadow ping-pong
     uint32_t        m_color_taa_idx       = 0;   // incremented each frame for TAA color ping-pong + jitter
+    AaMode          m_current_aa_mode     = AaMode::TAA; // tracks current built pipeline AA mode
     glm::mat4       m_prev_view_proj      = glm::mat4(0.0f); // last frame's proj*view; 0 on first frame
+    float           m_elapsed_time        = 0.0f; // seconds since renderer init (written to FrameUBO temporalParams.w)
+    std::chrono::steady_clock::time_point m_last_frame_time; // for delta-time computation
+
+    std::atomic<size_t> m_texture_vram_bytes{0}; // running total of GPU texture memory (approx)
 
     // TAA (Temporal Anti-Aliasing) color ping-pong
     vk::VulkanImage  m_taa_color[2];
@@ -125,6 +141,18 @@ private:
     VkFramebuffer    m_taa_fbs[2]    = {};
     VkPipelineLayout m_taa_layout    = VK_NULL_HANDLE;
     VkPipeline       m_taa_pipe      = VK_NULL_HANDLE;
+
+    // SSR (Screen Space Reflections)
+    vk::VulkanImage  m_ssr_raw;         // ray march output (current frame)
+    vk::VulkanImage  m_ssr_history[2];  // temporal accumulation ping-pong
+    uint32_t         m_ssr_temporal_idx = 0;  // incremented each frame
+    VkRenderPass     m_ssr_pass         = VK_NULL_HANDLE;  // shared for raw + temporal
+    VkFramebuffer    m_ssr_raw_fb       = VK_NULL_HANDLE;
+    VkFramebuffer    m_ssr_history_fbs[2] = {};
+    VkPipelineLayout m_ssr_ray_layout      = VK_NULL_HANDLE;
+    VkPipelineLayout m_ssr_temporal_layout = VK_NULL_HANDLE;
+    VkPipeline       m_ssr_ray_pipe        = VK_NULL_HANDLE;
+    VkPipeline       m_ssr_temporal_pipe   = VK_NULL_HANDLE;
 
     VkRenderPass     m_ssao_pass      = VK_NULL_HANDLE;
     VkFramebuffer    m_ssao_fb        = VK_NULL_HANDLE;
@@ -134,40 +162,41 @@ private:
     VkPipeline       m_ssao_pipe       = VK_NULL_HANDLE;
     VkPipeline       m_ssao_blur_pipe  = VK_NULL_HANDLE;
 
-    VkRenderPass m_shadow_pass  = VK_NULL_HANDLE;
-    VkRenderPass m_gbuf_pass    = VK_NULL_HANDLE;
-    VkRenderPass m_light_pass   = VK_NULL_HANDLE;
-    VkRenderPass m_forward_pass = VK_NULL_HANDLE;
-    VkRenderPass m_bloom_pass   = VK_NULL_HANDLE;
-    VkRenderPass m_tonemap_pass = VK_NULL_HANDLE;
-    VkRenderPass m_imgui_pass   = VK_NULL_HANDLE;
+    VkRenderPass m_shadow_pass    = VK_NULL_HANDLE;
+    VkRenderPass m_depth_pre_pass = VK_NULL_HANDLE;  // depth pre-pass: normals + roughness + depth
+    VkRenderPass m_fwd_plus_pass  = VK_NULL_HANDLE;  // forward+ color pass (rebuilt on AA change)
+    VkRenderPass m_bloom_pass     = VK_NULL_HANDLE;
+    VkRenderPass m_tonemap_pass   = VK_NULL_HANDLE;
+    VkRenderPass m_imgui_pass     = VK_NULL_HANDLE;
 
-    VkFramebuffer m_shadow_fbs[4] = {};
-    VkFramebuffer m_gbuf_fb    = VK_NULL_HANDLE;
-    VkFramebuffer m_light_fbs[2] = {};    // ping-pong for shadow accumulation
-    VkFramebuffer m_forward_fb = VK_NULL_HANDLE;
-    VkFramebuffer m_bloom_a_fb = VK_NULL_HANDLE;
-    VkFramebuffer m_bloom_b_fb = VK_NULL_HANDLE;
+    VkFramebuffer m_shadow_fbs[4]    = {};
+    VkFramebuffer m_depth_pre_fb     = VK_NULL_HANDLE;
+    VkFramebuffer m_fwd_plus_fb      = VK_NULL_HANDLE;
+    VkFramebuffer m_bloom_a_fb       = VK_NULL_HANDLE;
+    VkFramebuffer m_bloom_b_fb       = VK_NULL_HANDLE;
     std::vector<VkFramebuffer> m_tonemap_fbs;
     std::vector<VkFramebuffer> m_imgui_fbs;
 
-    VkPipelineLayout m_shadow_layout   = VK_NULL_HANDLE;
-    VkPipelineLayout m_pbr_layout      = VK_NULL_HANDLE;   // reused for gbuf + forward pipes
-    VkPipelineLayout m_deferred_layout = VK_NULL_HANDLE;   // for deferred_light pipe
-    VkPipelineLayout m_bright_layout   = VK_NULL_HANDLE;
-    VkPipelineLayout m_blur_layout     = VK_NULL_HANDLE;
-    VkPipelineLayout m_tonemap_layout  = VK_NULL_HANDLE;
+    VkPipelineLayout m_shadow_layout      = VK_NULL_HANDLE;
+    VkPipelineLayout m_depth_pre_layout   = VK_NULL_HANDLE;  // {frame, material} + PbrPush
+    VkPipelineLayout m_fwd_plus_obj_layout = VK_NULL_HANDLE; // {frame, material, fwd_plus_input} + PbrPush
+    VkPipelineLayout m_sky_fwd_layout     = VK_NULL_HANDLE;  // {frame} + SkyPush
+    VkPipelineLayout m_bright_layout      = VK_NULL_HANDLE;
+    VkPipelineLayout m_blur_layout        = VK_NULL_HANDLE;
+    VkPipelineLayout m_tonemap_layout     = VK_NULL_HANDLE;
 
-    VkPipeline m_shadow_pipe         = VK_NULL_HANDLE;
-    VkPipeline m_shadow_pipe_double  = VK_NULL_HANDLE;
-    VkPipeline m_gbuf_pipe           = VK_NULL_HANDLE;     // opaque/mask, back-cull, 4 MRT
-    VkPipeline m_gbuf_pipe_double    = VK_NULL_HANDLE;     // opaque/mask, no cull
-    VkPipeline m_deferred_pipe       = VK_NULL_HANDLE;     // fullscreen deferred lighting
-    VkPipeline m_forward_pipe        = VK_NULL_HANDLE;     // blend, back-cull, depth read-only
-    VkPipeline m_forward_pipe_double = VK_NULL_HANDLE;     // blend, no cull
-    VkPipeline m_bright_pipe         = VK_NULL_HANDLE;
-    VkPipeline m_blur_pipe           = VK_NULL_HANDLE;
-    VkPipeline m_tonemap_pipe        = VK_NULL_HANDLE;
+    VkPipeline m_shadow_pipe           = VK_NULL_HANDLE;
+    VkPipeline m_shadow_pipe_double    = VK_NULL_HANDLE;
+    VkPipeline m_depth_pre_pipe        = VK_NULL_HANDLE;  // opaque/mask, back-cull
+    VkPipeline m_depth_pre_pipe_double = VK_NULL_HANDLE;  // opaque/mask, no-cull
+    VkPipeline m_sky_fwd_pipe          = VK_NULL_HANDLE;  // sky fullscreen (rebuilt on AA change)
+    VkPipeline m_fwd_opaque_pipe       = VK_NULL_HANDLE;  // opaque/mask, back-cull (rebuilt on AA change)
+    VkPipeline m_fwd_opaque_pipe_double = VK_NULL_HANDLE; // opaque/mask, no-cull (rebuilt on AA change)
+    VkPipeline m_fwd_blend_pipe        = VK_NULL_HANDLE;  // blend, back-cull (rebuilt on AA change)
+    VkPipeline m_fwd_blend_pipe_double = VK_NULL_HANDLE;  // blend, no-cull (rebuilt on AA change)
+    VkPipeline m_bright_pipe           = VK_NULL_HANDLE;
+    VkPipeline m_blur_pipe             = VK_NULL_HANDLE;
+    VkPipeline m_tonemap_pipe          = VK_NULL_HANDLE;
 
     std::vector<DrawItem> m_draws;
     std::vector<Light> m_frame_lights;
@@ -206,6 +235,13 @@ private:
     VkPipeline       m_ibl_lut_pipe  = VK_NULL_HANDLE;
     bool             m_ibl_ready     = false;
     bool             m_ibl_dirty     = true;
+
+    // HDR equirectangular sky
+    vk::VulkanImage  m_hdr_equirect;              // loaded RGBA32F equirect source
+    bool             m_has_hdr_sky   = false;     // true once HDR is loaded
+    VkPipelineLayout m_equirect_layout = VK_NULL_HANDLE;
+    VkPipeline       m_equirect_pipe   = VK_NULL_HANDLE;
+    std::string m_hdr_sky_path_loaded;
 
     bool create_ibl_resources_();
     bool create_ibl_pipelines_();

@@ -97,7 +97,8 @@ static VulkanImage make_image_and_view(VkContext& ctx,
                                        uint32_t mips,
                                        VkFormat format,
                                        VkImageUsageFlags usage,
-                                       VkImageAspectFlags aspect)
+                                       VkImageAspectFlags aspect,
+                                       VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT)
 {
     VulkanImage img;
     img.format     = format;
@@ -115,7 +116,7 @@ static VulkanImage make_image_and_view(VkContext& ctx,
     ici.tiling        = VK_IMAGE_TILING_OPTIMAL;
     ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     ici.usage         = usage;
-    ici.samples       = VK_SAMPLE_COUNT_1_BIT;
+    ici.samples       = samples;
     ici.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
 
     VmaAllocationCreateInfo ai{};
@@ -227,6 +228,48 @@ VulkanImage create_texture2d(VkContext& ctx, const void* pixels, int width, int 
 }
 
 // ---------------------------------------------------------------------------
+VulkanImage create_texture2d_hdr(VkContext& ctx, const float* pixels_rgba, int width, int height) {
+    VkDeviceSize size = (VkDeviceSize)width * height * 4 * sizeof(float);
+
+    auto staging = create_staging_buffer(ctx.allocator(), size);
+    std::memcpy(staging.mapped, pixels_rgba, (size_t)size);
+
+    VulkanImage img = make_image_and_view(ctx, (uint32_t)width, (uint32_t)height, 1,
+        VK_FORMAT_R32G32B32A32_SFLOAT,
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT);
+
+    auto cmd = ctx.begin_single_cmd();
+    transition_image_layout(cmd, img.image, VK_IMAGE_ASPECT_COLOR_BIT,
+        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+    VkBufferImageCopy region{};
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent = {(uint32_t)width, (uint32_t)height, 1};
+    vkCmdCopyBufferToImage(cmd, staging.handle, img.image,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    transition_image_layout(cmd, img.image, VK_IMAGE_ASPECT_COLOR_BIT,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    ctx.end_single_cmd(cmd);
+    staging.destroy(ctx.allocator());
+
+    VkSamplerCreateInfo si{};
+    si.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    si.magFilter    = VK_FILTER_LINEAR;
+    si.minFilter    = VK_FILTER_LINEAR;
+    si.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    si.maxLod       = 0.25f;
+    VK_CHECK(vkCreateSampler(ctx.device(), &si, nullptr, &img.sampler));
+
+    return img;
+}
+
+// ---------------------------------------------------------------------------
 VulkanImage create_texture2d_1x1(VkContext& ctx, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
     uint8_t px[4] = { r, g, b, a };
     return create_texture2d(ctx, px, 1, 1);
@@ -236,9 +279,10 @@ VulkanImage create_texture2d_1x1(VkContext& ctx, uint8_t r, uint8_t g, uint8_t b
 VulkanImage create_attachment(VkContext& ctx, uint32_t w, uint32_t h,
                               VkFormat format, VkImageUsageFlags usage,
                               VkImageAspectFlags aspect,
-                              bool make_sampler)
+                              bool make_sampler,
+                              VkSampleCountFlagBits samples)
 {
-    VulkanImage img = make_image_and_view(ctx, w, h, 1, format, usage, aspect);
+    VulkanImage img = make_image_and_view(ctx, w, h, 1, format, usage, aspect, samples);
 
     if (make_sampler) {
         VkSamplerCreateInfo si{};

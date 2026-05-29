@@ -31,6 +31,7 @@ enum class FieldType {
     String,
     AssetPath, // string path — shows file-browse button in editor
     EnumInt,   // int with named values (see enum_labels)
+    SectionHeader, // visual separator/header in the editor (no data)
 };
 
 // Description of one serialisable / editable field on a node type.
@@ -90,6 +91,11 @@ private:
             [](void* _n) -> void* {                                           \
                 return &static_cast<_T*>(_n)->fname;                          \
             }, { __VA_ARGS__ } });
+
+// Insert a collapsible section header (no data field).
+#define SOL_SECTION(sname)                                                    \
+        _desc.fields.push_back({ sname, ::sol::FieldType::SectionHeader,     \
+            [](void*) -> void* { return nullptr; }, {} });
 
 // End registration — submits the descriptor to the global registry.
 #define SOL_REFLECT_END()                                                     \

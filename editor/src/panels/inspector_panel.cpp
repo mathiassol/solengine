@@ -9,13 +9,16 @@
 #include <glm/glm.hpp>
 
 #include <QApplication>
+#include <QColorDialog>
 #include <QComboBox>
 #include <QFormLayout>
 #include <QFrame>
 #include <QLabel>
 #include <QLineEdit>
+#include <QHBoxLayout>
 #include <QScrollArea>
 #include <QSignalBlocker>
+#include <QPushButton>
 #include <QVBoxLayout>
 
 namespace {
@@ -38,6 +41,24 @@ QFormLayout* makeFormLayout(QWidget* parent)
     // Fixed label column prevents it from hogging space; widget column gets the rest.
     form->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
     return form;
+}
+
+QColor vec3ToColor(const glm::vec3& v)
+{
+    return QColor::fromRgbF(v.x, v.y, v.z);
+}
+
+QColor vec4ToColor(const glm::vec4& v)
+{
+    return QColor::fromRgbF(v.x, v.y, v.z, v.w);
+}
+
+void setSwatch(QPushButton* button, const QColor& color)
+{
+    button->setStyleSheet(QString(
+        "QPushButton { background-color: %1; border: 1px solid #45475a; border-radius: 4px; }"
+        "QPushButton:hover { border-color: #89b4fa; }")
+        .arg(color.name(QColor::HexArgb)));
 }
 }
 
@@ -67,6 +88,7 @@ void InspectorPanel::clear()
     while (m_form->rowCount() > 0)
         m_form->removeRow(0);
     m_field_entries.clear();
+    m_name_edit = nullptr;
 }
 
 // ---------------------------------------------------------------------------
@@ -90,9 +112,13 @@ void InspectorPanel::showNode(sol::Node* node)
 void InspectorPanel::buildFields(sol::Node* node)
 {
     auto* nameEdit = new QLineEdit(QString::fromStdString(node->name), m_content);
-    nameEdit->setReadOnly(true);
     nameEdit->setMinimumHeight(28);
-    m_form->addRow(makeFieldLabel("Entity", m_content), nameEdit);
+    connect(nameEdit, &QLineEdit::editingFinished, this, [this, nameEdit] {
+        if (!m_host || !m_current_node) return;
+        m_host->rename_node(m_current_node, nameEdit->text().toStdString());
+    });
+    m_name_edit = nameEdit;
+    m_form->addRow(makeFieldLabel("Name", m_content), nameEdit);
 
     auto* separator = new QFrame(m_content);
     separator->setFrameShape(QFrame::HLine);
@@ -171,8 +197,7 @@ void InspectorPanel::buildFields(sol::Node* node)
             break;
         }
 
-        case sol::FieldType::Vec3:
-        case sol::FieldType::Color3: {
+        case sol::FieldType::Vec3: {
             auto* vec = new Vec3Field(body);
             vec->setValue(*static_cast<glm::vec3*>(field.ptr(node)));
             connect(vec, &Vec3Field::valueChanged, this, [this, fname](const glm::vec3& v) {
@@ -184,8 +209,42 @@ void InspectorPanel::buildFields(sol::Node* node)
             break;
         }
 
-        case sol::FieldType::Vec4:
-        case sol::FieldType::Color4: {
+        case sol::FieldType::Color3: {
+            auto* container = new QWidget(body);
+            auto* row = new QHBoxLayout(container);
+            row->setContentsMargins(0, 0, 0, 0);
+            row->setSpacing(6);
+
+            auto* vec = new Vec3Field(container);
+            auto* swatch = new QPushButton(container);
+            swatch->setFixedSize(28, 28);
+            vec->setValue(*static_cast<glm::vec3*>(field.ptr(node)));
+            setSwatch(swatch, vec3ToColor(vec->value()));
+
+            connect(vec, &Vec3Field::valueChanged, this, [this, fname, swatch](const glm::vec3& v) {
+                if (!m_host || !m_current_node) return;
+                glm::vec3 value = v;
+                m_host->set_field(m_current_node, fname, &value);
+                setSwatch(swatch, vec3ToColor(v));
+            });
+            connect(swatch, &QPushButton::clicked, this, [this, fname, vec, swatch] {
+                if (!m_host || !m_current_node) return;
+                const QColor color = QColorDialog::getColor(vec3ToColor(vec->value()), this, "Pick Color");
+                if (!color.isValid()) return;
+                glm::vec3 value(color.redF(), color.greenF(), color.blueF());
+                vec->setValue(value);
+                setSwatch(swatch, color);
+                m_host->set_field(m_current_node, fname, &value);
+            });
+
+            row->addWidget(vec, 1);
+            row->addWidget(swatch);
+            w = container;
+            m_field_entries.push_back({ &field, vec });
+            break;
+        }
+
+        case sol::FieldType::Vec4: {
             auto* vec = new Vec4Field(body);
             vec->setValue(*static_cast<glm::vec4*>(field.ptr(node)));
             connect(vec, &Vec4Field::valueChanged, this, [this, fname](const glm::vec4& v) {
@@ -194,6 +253,42 @@ void InspectorPanel::buildFields(sol::Node* node)
                 m_host->set_field(m_current_node, fname, &value);
             });
             w = vec;
+            break;
+        }
+
+        case sol::FieldType::Color4: {
+            auto* container = new QWidget(body);
+            auto* row = new QHBoxLayout(container);
+            row->setContentsMargins(0, 0, 0, 0);
+            row->setSpacing(6);
+
+            auto* vec = new Vec4Field(container);
+            auto* swatch = new QPushButton(container);
+            swatch->setFixedSize(28, 28);
+            vec->setValue(*static_cast<glm::vec4*>(field.ptr(node)));
+            setSwatch(swatch, vec4ToColor(vec->value()));
+
+            connect(vec, &Vec4Field::valueChanged, this, [this, fname, swatch](const glm::vec4& v) {
+                if (!m_host || !m_current_node) return;
+                glm::vec4 value = v;
+                m_host->set_field(m_current_node, fname, &value);
+                setSwatch(swatch, vec4ToColor(v));
+            });
+            connect(swatch, &QPushButton::clicked, this, [this, fname, vec, swatch] {
+                if (!m_host || !m_current_node) return;
+                const QColor color = QColorDialog::getColor(
+                    vec4ToColor(vec->value()), this, "Pick Color", QColorDialog::ShowAlphaChannel);
+                if (!color.isValid()) return;
+                glm::vec4 value(color.redF(), color.greenF(), color.blueF(), color.alphaF());
+                vec->setValue(value);
+                setSwatch(swatch, color);
+                m_host->set_field(m_current_node, fname, &value);
+            });
+
+            row->addWidget(vec, 1);
+            row->addWidget(swatch);
+            w = container;
+            m_field_entries.push_back({ &field, vec });
             break;
         }
 
@@ -226,7 +321,9 @@ void InspectorPanel::buildFields(sol::Node* node)
 
         if (w) {
             bodyForm->addRow(makeFieldLabel(label, body), w);
-            m_field_entries.push_back({ &field, w });
+            if (field.type != sol::FieldType::Color3 && field.type != sol::FieldType::Color4) {
+                m_field_entries.push_back({ &field, w });
+            }
         }
     }
 }
@@ -247,6 +344,14 @@ static bool widgetHasFocus(QWidget* w)
 void InspectorPanel::refresh()
 {
     if (!m_current_node) return;
+
+    if (m_name_edit && !widgetHasFocus(m_name_edit)) {
+        const QString name = QString::fromStdString(m_current_node->name);
+        if (m_name_edit->text() != name) {
+            QSignalBlocker blk(m_name_edit);
+            m_name_edit->setText(name);
+        }
+    }
 
     for (auto& entry : m_field_entries) {
         // Never stomp a widget the user is actively editing.
@@ -292,8 +397,7 @@ void InspectorPanel::refresh()
             }
             break;
         }
-        case sol::FieldType::Vec3:
-        case sol::FieldType::Color3: {
+        case sol::FieldType::Vec3: {
             auto* vec = static_cast<Vec3Field*>(entry.widget);
             const glm::vec3 v = *static_cast<glm::vec3*>(ptr);
             const glm::vec3 cur = vec->value();
@@ -301,13 +405,32 @@ void InspectorPanel::refresh()
                 vec->setValue(v);
             break;
         }
-        case sol::FieldType::Vec4:
+        case sol::FieldType::Color3: {
+            auto* vec = static_cast<Vec3Field*>(entry.widget);
+            const glm::vec3 v = *static_cast<glm::vec3*>(ptr);
+            const glm::vec3 cur = vec->value();
+            if (glm::any(glm::notEqual(cur, v)))
+                vec->setValue(v);
+            if (auto* swatch = entry.widget->parentWidget()->findChild<QPushButton*>())
+                setSwatch(swatch, vec3ToColor(v));
+            break;
+        }
+        case sol::FieldType::Vec4: {
+            auto* vec = static_cast<Vec4Field*>(entry.widget);
+            const glm::vec4 v = *static_cast<glm::vec4*>(ptr);
+            const glm::vec4 cur = vec->value();
+            if (glm::any(glm::notEqual(cur, v)))
+                vec->setValue(v);
+            break;
+        }
         case sol::FieldType::Color4: {
             auto* vec = static_cast<Vec4Field*>(entry.widget);
             const glm::vec4 v = *static_cast<glm::vec4*>(ptr);
             const glm::vec4 cur = vec->value();
             if (glm::any(glm::notEqual(cur, v)))
                 vec->setValue(v);
+            if (auto* swatch = entry.widget->parentWidget()->findChild<QPushButton*>())
+                setSwatch(swatch, vec4ToColor(v));
             break;
         }
         case sol::FieldType::String: {

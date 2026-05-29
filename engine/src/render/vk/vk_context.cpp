@@ -280,12 +280,12 @@ void VkContext::end_single_cmd(VkCommandBuffer cmd) {
 bool VkContext::create_imgui_pool() {
     if (m_imgui_pool) return true;
     VkDescriptorPoolSize sizes[] = {
-        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16 },
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 128 },
     };
     VkDescriptorPoolCreateInfo pi{};
     pi.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     pi.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    pi.maxSets       = 16;
+    pi.maxSets       = 128;
     pi.poolSizeCount = 1;
     pi.pPoolSizes    = sizes;
     VK_CHECK(vkCreateDescriptorPool(m_device, &pi, nullptr, &m_imgui_pool));

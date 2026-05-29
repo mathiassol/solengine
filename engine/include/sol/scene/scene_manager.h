@@ -27,15 +27,28 @@ public:
 
     // Returns the active scene (may be null before first load).
     Scene* current() const { return m_scene.get(); }
+    Scene* current_scene() const { return m_scene.get(); }
 
     // Call from the game's on_update.
     void update(Engine& engine, float dt);
+
+    // Phased update — mirrors Scene::update_pre/post_physics.
+    void update_pre_physics (Engine& engine, float dt);
+    void update_post_physics(Engine& engine, float dt);
 
     // Call from the game's on_render.
     void render(Engine& engine);
 
     // Graceful unload (calls on_destroy on all nodes).
     void unload(Engine& engine);
+
+    // Raw attach/detach — no on_ready / on_destroy called.
+    // Used by the hot scene slot system to swap scenes without re-initialising.
+    std::unique_ptr<Scene> detach_scene_raw();
+    void attach_scene_raw(std::unique_ptr<Scene> scene);
+
+    // Cancel a pending (deferred) scene swap before it is applied.
+    void cancel_pending();
 
 private:
     std::unique_ptr<Scene> m_scene;

@@ -2,9 +2,12 @@
 setlocal EnableDelayedExpansion
 
 :: ─────────────────────────────────────────────────────────────────────────────
-::  SolEngine dev-install script
-::  Builds sol.exe + sol_engine.dll and installs them to %LOCALAPPDATA%\SolEngine\bin
-::  Adds that directory to the current user's PATH (permanent, no admin needed).
+::  SolEngine install script
+::  - Builds a Release of the full engine + editor
+::  - Installs everything to %LOCALAPPDATA%\SolEngine\bin
+::  - Creates Desktop + Start Menu shortcuts → sol_editor.exe (project launcher)
+::  - Registers in Windows "Apps & Features" (user-scope, no admin needed)
+::  - Adds bin dir to the current user's PATH
 :: ─────────────────────────────────────────────────────────────────────────────
 
 set "REPO=%~dp0"
@@ -12,68 +15,70 @@ set "REPO=%REPO:~0,-1%"
 set "BUILD_DIR=%REPO%\build"
 set "BIN_SRC=%BUILD_DIR%\out\Release"
 set "INSTALL_DIR=%LOCALAPPDATA%\SolEngine\bin"
+set "APP_VERSION=0.1.0"
 
 echo.
-echo  SolEngine Installer
+echo  SolEngine Installer  v%APP_VERSION%
 echo  ════════════════════════════════════════════
-echo  Repo     : %REPO%
-echo  Build    : %BUILD_DIR%
-echo  Install  : %INSTALL_DIR%
+echo  Repo    : %REPO%
+echo  Install : %INSTALL_DIR%
 echo  ════════════════════════════════════════════
 echo.
 
-:: ── Step 1: Build ─────────────────────────────────────────────────────────────
-echo [1/3] Building SolEngine...
-echo.
-
+:: ── Step 1: CMake configure (only if needed) ──────────────────────────────────
 if not exist "%BUILD_DIR%\CMakeCache.txt" (
-    echo   Configuring CMake...
-    cmake -S "%REPO%" -B "%BUILD_DIR%" -DCMAKE_BUILD_TYPE=Release
+    echo [1/5] Configuring CMake...
+    cmake -S "%REPO%" -B "%BUILD_DIR%"
     if errorlevel 1 (
-        echo.
         echo  ERROR: CMake configure failed.
         pause & exit /b 1
     )
+) else (
+    echo [1/5] CMake already configured - skipping.
 )
 
+:: ── Step 2: Build Release ─────────────────────────────────────────────────────
+echo.
+echo [2/5] Building Release...
 cmake --build "%BUILD_DIR%" --config Release
 if errorlevel 1 (
-    echo.
     echo  ERROR: Build failed.
     pause & exit /b 1
 )
-echo.
 echo   Build complete.
 
-:: ── Step 2: Install files ─────────────────────────────────────────────────────
+:: ── Step 3: Copy all binaries to install dir ──────────────────────────────────
 echo.
-echo [2/3] Installing to %INSTALL_DIR%...
+echo [3/5] Installing to %INSTALL_DIR%...
 
-if not exist "%INSTALL_DIR%" (
-    mkdir "%INSTALL_DIR%"
-)
+if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
 
-copy /Y "%BIN_SRC%\sol.exe"         "%INSTALL_DIR%\sol.exe"         >nul
-copy /Y "%BIN_SRC%\sol_engine.dll"  "%INSTALL_DIR%\sol_engine.dll"  >nul
+:: Core engine binaries
+copy /Y "%BIN_SRC%\sol.exe"         "%INSTALL_DIR%\sol.exe"         >nul 2>&1
+copy /Y "%BIN_SRC%\sol_engine.dll"  "%INSTALL_DIR%\sol_engine.dll"  >nul 2>&1
+
+:: Editor + all Qt DLLs/plugins windeployqt placed next to it
 if exist "%BIN_SRC%\sol_editor.exe" (
-    copy /Y "%BIN_SRC%\sol_editor.exe" "%INSTALL_DIR%\sol_editor.exe" >nul
-    echo   Installed: sol_editor.exe
-    REM Copy Qt runtime DLLs if present
-    for %%f in ("%BIN_SRC%\Qt6*.dll" "%BIN_SRC%\platforms" "%BIN_SRC%\styles") do (
-        if exist "%%f" xcopy /Y /E /Q "%%f" "%INSTALL_DIR%\" >nul 2>&1
-    )
+    xcopy /Y /E /Q "%BIN_SRC%\*" "%INSTALL_DIR%\" >nul 2>&1
+    echo   Installed editor + Qt runtime.
+) else (
+    echo   WARNING: sol_editor.exe not found in %BIN_SRC% - editor not installed.
 )
 
-if errorlevel 1 (
-    echo  ERROR: Failed to copy files.
-    pause & exit /b 1
-)
-echo   Installed: sol.exe
-echo   Installed: sol_engine.dll
+echo   Installed: sol.exe  sol_engine.dll  sol_editor.exe
 
-:: ── Step 3: Add to user PATH (via PowerShell — no 1024-char limit) ────────────
+:: ── Step 4: Shortcuts + App registration (PowerShell) ─────────────────────────
 echo.
-echo [3/3] Adding to user PATH...
+echo [4/5] Creating shortcuts and registering application...
+
+powershell -NoProfile -ExecutionPolicy Bypass -File "%REPO%\tools\install_shortcuts.ps1" -InstallDir "%INSTALL_DIR%" -AppVersion "%APP_VERSION%"
+if errorlevel 1 (
+    echo  WARNING: Shortcut creation failed - you can still run sol_editor.exe directly.
+)
+
+:: ── Step 5: Add bin dir to user PATH ──────────────────────────────────────────
+echo.
+echo [5/5] Updating PATH...
 
 powershell -NoProfile -Command ^
     "$dir = '%INSTALL_DIR%';" ^
@@ -81,20 +86,22 @@ powershell -NoProfile -Command ^
     "$entries = ($cur -split ';') | Where-Object { $_ -and $_ -notlike '*SolEngine*' };" ^
     "$entries += $dir;" ^
     "[Environment]::SetEnvironmentVariable('PATH', ($entries -join ';'), 'User');" ^
-    "Write-Host '  PATH updated: ' $dir"
+    "Write-Host '  PATH updated'"
 
 :: ── Done ──────────────────────────────────────────────────────────────────────
 echo.
 echo  ════════════════════════════════════════════
 echo   Install complete!
 echo.
-echo   Open a NEW terminal and run:
+echo   Double-click the SolEngine shortcut on your
+echo   Desktop (or search Start Menu) to open the
+echo   project launcher.
 echo.
+echo   Command-line tools (new terminal):
+echo     sol run .        (run project in cwd)
 echo     sol version
-echo     sol help
-echo     sol run .             (from a project dir)
 echo.
-echo   To update, just run install.bat again.
+echo   To reinstall / update, run install.bat again.
 echo  ════════════════════════════════════════════
 echo.
 

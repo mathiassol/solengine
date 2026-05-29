@@ -19,19 +19,26 @@ using AlphaMode = sol::AlphaMode;
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
+#include <stb_image_resize2.h>
+#include <stb_image.h>
+
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstring>
+#include <vector>
 
 #include "shaders/fullscreen.vert.glsl.h"
 #include "shaders/shadow.vert.glsl.h"
 #include "shaders/shadow.frag.glsl.h"
 #include "shaders/shadow_vsm.frag.glsl.h"
-#include "shaders/pbr.vert.glsl.h"
-#include "shaders/pbr.frag.glsl.h"
-#include "shaders/gbuf.frag.glsl.h"
-#include "shaders/deferred_light.frag.glsl.h"
+#include "shaders/sky.vert.glsl.h"
+#include "shaders/sky.frag.glsl.h"
+#include "shaders/depth_pre.vert.glsl.h"
+#include "shaders/depth_pre.frag.glsl.h"
+#include "shaders/forward_plus.vert.glsl.h"
+#include "shaders/forward_plus.frag.glsl.h"
 #include "shaders/bloom_bright.frag.glsl.h"
 #include "shaders/bloom_blur.frag.glsl.h"
 #include "shaders/tonemap.frag.glsl.h"
@@ -42,6 +49,9 @@ using AlphaMode = sol::AlphaMode;
 #include "shaders/ibl_prefilter.frag.glsl.h"
 #include "shaders/ibl_brdf_lut.frag.glsl.h"
 #include "shaders/taa.frag.glsl.h"
+#include "shaders/ssr.frag.glsl.h"
+#include "shaders/ssr_temporal.frag.glsl.h"
+#include "shaders/equirect_to_cube.frag.glsl.h"
 
 namespace sol {
 namespace {
@@ -49,12 +59,11 @@ namespace {
 constexpr uint32_t SHADOW_SIZE = 4096;
 constexpr VkFormat HDR_FORMAT   = VK_FORMAT_R16G16B16A16_SFLOAT;
 constexpr VkFormat DEPTH_FORMAT = VK_FORMAT_D32_SFLOAT;
-constexpr VkFormat GBUF0_FORMAT = VK_FORMAT_R8G8B8A8_UNORM;        // albedo + ao
 constexpr VkFormat GBUF1_FORMAT = VK_FORMAT_R16G16B16A16_SFLOAT;   // world normal + geom flag
-constexpr VkFormat GBUF2_FORMAT = VK_FORMAT_R8G8B8A8_UNORM;        // metallic + roughness + lit_flag
-constexpr VkFormat GBUF3_FORMAT = VK_FORMAT_R16G16B16A16_SFLOAT;   // emissive
 constexpr VkFormat SSAO_FORMAT  = VK_FORMAT_R8_UNORM;
 constexpr VkFormat SHADOW_ACCUM_FORMAT = VK_FORMAT_R16_SFLOAT;
+constexpr VkFormat ROUGHNESS_FORMAT = VK_FORMAT_R8_UNORM;
+constexpr VkFormat SSR_FORMAT       = VK_FORMAT_R16G16B16A16_SFLOAT;
 
 struct alignas(16) ShadowPush {
     glm::mat4 model {1.0f};
@@ -76,7 +85,9 @@ struct alignas(16) SkyPush {
     glm::vec4 zenith {0.08f, 0.15f, 0.4f, 0.0f};
     glm::vec4 horizon {0.5f, 0.6f, 0.7f, 0.0f};
     glm::vec4 sun_color {3.0f, 2.5f, 2.0f, 0.9997f};
+    glm::ivec4 flags {0};  // flags.x = 1 → sample HDR cubemap
 };
+static_assert(sizeof(SkyPush) == 80);
 
 struct alignas(16) Vec4Push {
     glm::vec4 value {0.0f};
@@ -104,6 +115,12 @@ struct alignas(4) IBLCubePush {
     int32_t pad0, pad1;
 };
 static_assert(sizeof(IBLCubePush) == 16);
+
+struct alignas(4) EquirectPush {
+    int32_t face;
+    float   pad0, pad1, pad2;
+};
+static_assert(sizeof(EquirectPush) == 16);
 
 struct alignas(16) TaaPush {
     glm::vec4 params;     // x=blend_alpha, y=enabled(1.0), z=variance_gamma, w=sharpening
@@ -299,6 +316,7 @@ struct VulkanRenderer::GpuMesh {
 
 struct VulkanRenderer::GpuTexture {
     vk::VulkanImage image;
+    size_t          vram_bytes = 0;  // for VRAM budget tracking
 };
 
 struct VulkanRenderer::DrawItem {
@@ -392,6 +410,10 @@ bool VulkanRenderer::init_win32(void* hwnd, void* hinstance, int w, int h) {
     }
 }
 
+
+void VulkanRenderer::wait_idle() {
+    if (m_ctx.device()) vkDeviceWaitIdle(m_ctx.device());
+}
 
 void VulkanRenderer::shutdown() {
     if (m_ctx.device()) vkDeviceWaitIdle(m_ctx.device());
@@ -422,6 +444,14 @@ void VulkanRenderer::shutdown() {
 }
 
 void VulkanRenderer::begin_frame() {
+    // Time tracking — used by volumetrics and animated effects via FrameUBO temporalParams.w
+    auto now = std::chrono::steady_clock::now();
+    if (m_last_frame_time.time_since_epoch().count() != 0) {
+        float dt = std::chrono::duration<float>(now - m_last_frame_time).count();
+        m_elapsed_time += dt;
+    }
+    m_last_frame_time = now;
+
     clear_lights_();
     clear_sky_();
     m_draws.clear();
@@ -476,60 +506,55 @@ void VulkanRenderer::end_frame() {
             }
         }
 
-        // Transition gbuf0-3 and hdr_depth for writing in the G-buffer pass
-        for (auto* img : {&m_gbuf0, &m_gbuf1, &m_gbuf2, &m_gbuf3}) {
-            vk::transition_image_layout(frame.cmd, img->image, VK_IMAGE_ASPECT_COLOR_BIT,
-                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        // Check if AA mode changed; rebuild forward resources if so (before recording passes)
+        if (m_settings.aa_mode != m_current_aa_mode) {
+            VK_CHECK(vkEndCommandBuffer(frame.cmd));
+            rebuild_forward_();
+            // Restart command buffer after rebuild
+            VK_CHECK(vkResetCommandBuffer(frame.cmd, 0));
+            VkCommandBufferBeginInfo bi2{};
+            bi2.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            VK_CHECK(vkBeginCommandBuffer(frame.cmd, &bi2));
+            // Re-record shadow passes in new command buffer
+            if (m_has_shadow) {
+                if (m_vsm_mode) record_vsm_shadow_pass_(frame.cmd, frame_set);
+                else            record_shadow_pass_(frame.cmd, frame_set);
+            }
         }
-        vk::transition_image_layout(frame.cmd, m_hdr_depth.image, VK_IMAGE_ASPECT_DEPTH_BIT,
-            VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 
-        record_gbuf_pass_(frame.cmd, frame_set);
+        record_depth_pre_pass_(frame.cmd, frame_set);
 
-        // SSAO pass runs after GBuffer (reads normals+depth), before deferred lighting
+        // SSAO: reads gbuf1 (normals from depth pre-pass) + hdr_depth, same as before
         if (m_settings.ssao_enabled) {
             record_ssao_passes_(frame.cmd, frame_set);
         }
 
-        // Transition hdr_color for the deferred lighting output
-        vk::transition_image_layout(frame.cmd, m_hdr_color.image, VK_IMAGE_ASPECT_COLOR_BIT,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        record_fwd_plus_pass_(frame.cmd, frame_set);
 
-        // Ping-pong: write to accum[write], read history from accum[read]
-        uint32_t taa_write = m_taa_idx % 2;
-        uint32_t taa_read  = 1 - taa_write;
-        vk::transition_image_layout(frame.cmd, m_shadow_accum[taa_write].image, VK_IMAGE_ASPECT_COLOR_BIT,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-
-        record_light_pass_(frame.cmd, frame_set, taa_read, taa_write);
-        ++m_taa_idx;
-
-        // Forward pass only runs if there are blend draws
-        bool has_blend = false;
-        for (const auto& draw : m_draws) {
-            if (draw.material.alpha_mode == AlphaMode::Blend) { has_blend = true; break; }
+        const vk::VulkanImage* ssr_src = &m_fallback_black;
+        if (m_settings.ssr_enabled) {
+            uint32_t ssr_write = m_ssr_temporal_idx % 2;
+            record_ssr_passes_(frame.cmd, frame_set);
+            ssr_src = &m_ssr_history[ssr_write];
+            ++m_ssr_temporal_idx;
+        } else {
+            m_ssr_temporal_idx = 0;
         }
-        if (has_blend) {
-            // hdr_color is in SHADER_READ_ONLY after light_pass; transition to COLOR_ATTACHMENT for LOAD
-            vk::transition_image_layout(frame.cmd, m_hdr_color.image, VK_IMAGE_ASPECT_COLOR_BIT,
+
+        // TAA: only when aa_mode == TAA
+        const vk::VulkanImage* post_hdr = &m_hdr_color;
+        if (m_settings.aa_mode == AaMode::TAA) {
+            uint32_t color_write = m_color_taa_idx % 2;
+            uint32_t color_read  = 1 - color_write;
+            vk::transition_image_layout(frame.cmd, m_taa_color[color_write].image, VK_IMAGE_ASPECT_COLOR_BIT,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-            record_forward_pass_(frame.cmd, frame_set);
+            record_taa_pass_(frame.cmd, frame_set, color_read, color_write);
+            post_hdr = &m_taa_color[color_write];
+            ++m_color_taa_idx;
         }
 
-        // --- TAA resolve pass ---
-        // Ping-pong: write to taa_color[color_write], read history from taa_color[color_read]
-        uint32_t color_write = m_color_taa_idx % 2;
-        uint32_t color_read  = 1 - color_write;
-        vk::transition_image_layout(frame.cmd, m_taa_color[color_write].image, VK_IMAGE_ASPECT_COLOR_BIT,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-        record_taa_pass_(frame.cmd, frame_set, color_read, color_write);
-        ++m_color_taa_idx;
-
-        // Bloom and tonemap now read from the TAA output instead of raw HDR
-        const vk::VulkanImage& post_hdr = m_taa_color[color_write];
-
-        record_bloom_passes_(frame.cmd, post_hdr);
-        record_tonemap_pass_(frame.cmd, image_idx, post_hdr);
+        record_bloom_passes_(frame.cmd, *post_hdr);
+        record_tonemap_pass_(frame.cmd, image_idx, *post_hdr, *ssr_src);
         record_imgui_pass_(frame.cmd, image_idx);
 
         VK_CHECK(vkEndCommandBuffer(frame.cmd));
@@ -605,9 +630,28 @@ void VulkanRenderer::free_mesh(void* gpu) {
 
 void* VulkanRenderer::alloc_texture(const void* pixels, int width, int height) {
     if (!m_ctx.device()) return nullptr;
+
+    // Honour max_texture_dim budget: downscale on the CPU before uploading.
+    const int max_dim = m_settings.max_texture_dim;
+    if (max_dim > 0 && (width > max_dim || height > max_dim)) {
+        float scale = static_cast<float>(max_dim) / static_cast<float>(std::max(width, height));
+        int new_w = std::max(1, static_cast<int>(std::round(width  * scale)));
+        int new_h = std::max(1, static_cast<int>(std::round(height * scale)));
+        std::vector<uint8_t> resized(static_cast<size_t>(new_w) * new_h * 4);
+        stbir_resize_uint8_linear(
+            static_cast<const unsigned char*>(pixels), width,  height, 0,
+            resized.data(),                            new_w, new_h,  0,
+            STBIR_RGBA);
+        return alloc_texture(resized.data(), new_w, new_h);
+    }
+
     auto* tex = new GpuTexture();
     try {
         tex->image = vk::create_texture2d(m_ctx, pixels, width, height);
+        // Track approximate VRAM: full mip chain ≈ w*h*4 * 4/3
+        size_t bytes = static_cast<size_t>(width) * height * 4 * 4 / 3;
+        m_texture_vram_bytes.fetch_add(bytes, std::memory_order_relaxed);
+        tex->vram_bytes = bytes;
         return tex;
     } catch (...) {
         tex->image.destroy(m_ctx.device(), m_ctx.allocator());
@@ -619,6 +663,7 @@ void* VulkanRenderer::alloc_texture(const void* pixels, int width, int height) {
 void VulkanRenderer::free_texture(void* gpu) {
     if (!gpu || !m_ctx.device()) return;
     auto* tex = static_cast<GpuTexture*>(gpu);
+    m_texture_vram_bytes.fetch_sub(tex->vram_bytes, std::memory_order_relaxed);
     tex->image.destroy(m_ctx.device(), m_ctx.allocator());
     delete tex;
 }
@@ -917,104 +962,60 @@ bool VulkanRenderer::create_render_passes_() {
             {vsm_color_ref}, &vsm_depth_ref);
     }
 
-    // --- G-buffer pass: 4 color MRT + depth ---
-    // Attachments: gbuf0, gbuf1, gbuf2, gbuf3 (indices 0-3), depth (index 4)
-    const std::vector<VkAttachmentDescription> gbuf_atts = {
-        {0, GBUF0_FORMAT, VK_SAMPLE_COUNT_1_BIT,
-         VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE,
-         VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
-         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-        {0, GBUF1_FORMAT, VK_SAMPLE_COUNT_1_BIT,
-         VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE,
-         VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
-         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-        {0, GBUF2_FORMAT, VK_SAMPLE_COUNT_1_BIT,
-         VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE,
-         VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
-         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-        {0, GBUF3_FORMAT, VK_SAMPLE_COUNT_1_BIT,
-         VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE,
-         VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
-         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-        {0, DEPTH_FORMAT, VK_SAMPLE_COUNT_1_BIT,
-         VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE,
-         VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
-         VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
-    };
-    const std::vector<VkAttachmentReference> gbuf_color_refs = {
-        {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
-        {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
-        {2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
-        {3, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
-    };
-    VkAttachmentReference gbuf_depth_ref{4, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
-    m_gbuf_pass = make_render_pass(m_ctx.device(), gbuf_atts, gbuf_color_refs, &gbuf_depth_ref);
-
-    // --- Deferred lighting pass: HDR color (att 0) + shadow accum (att 1), no depth ---
-    const std::array<VkAttachmentDescription, 2> light_atts = {{
-        {0, HDR_FORMAT, VK_SAMPLE_COUNT_1_BIT,
-         VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE,
-         VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
-         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-        {0, SHADOW_ACCUM_FORMAT, VK_SAMPLE_COUNT_1_BIT,
-         VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE,
-         VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
-         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}
-    }};
-    const std::array<VkAttachmentReference, 2> light_color_refs = {{
-        {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
-        {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}
-    }};
-    m_light_pass = make_render_pass(m_ctx.device(),
-        {light_atts[0], light_atts[1]},
-        {light_color_refs[0], light_color_refs[1]},
-        nullptr);
-
-    // --- Forward transparent pass: HDR LOAD + depth read-only ---
-    // Custom pass (not using make_render_pass) for read-only depth dependency.
+    // --- Depth pre-pass: gbuf1 normals (att 0) + roughness (att 1) + hdr_depth (att 2) ---
+    // All attachments rest at SHADER_READ_ONLY / DEPTH_STENCIL_READ_ONLY between frames.
+    // Render pass transitions them internally to the appropriate attachment layout and back.
     {
-        const std::array<VkAttachmentDescription, 2> fw_atts = {{
-            {0, HDR_FORMAT, VK_SAMPLE_COUNT_1_BIT,
-             VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE,
+        const std::array<VkAttachmentDescription, 3> dp_atts = {{
+            {0, GBUF1_FORMAT, VK_SAMPLE_COUNT_1_BIT,
+             VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE,
              VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
-             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+            {0, ROUGHNESS_FORMAT, VK_SAMPLE_COUNT_1_BIT,
+             VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE,
+             VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
             {0, DEPTH_FORMAT, VK_SAMPLE_COUNT_1_BIT,
-             VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+             VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE,
              VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
              VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
         }};
-        VkAttachmentReference fw_color{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-        VkAttachmentReference fw_depth{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
+        const std::array<VkAttachmentReference, 2> dp_colors = {{
+            {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+            {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}
+        }};
+        VkAttachmentReference dp_depth{2, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
 
         VkSubpassDescription subpass{};
         subpass.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
-        subpass.colorAttachmentCount    = 1;
-        subpass.pColorAttachments       = &fw_color;
-        subpass.pDepthStencilAttachment = &fw_depth;
+        subpass.colorAttachmentCount    = (uint32_t)dp_colors.size();
+        subpass.pColorAttachments       = dp_colors.data();
+        subpass.pDepthStencilAttachment = &dp_depth;
 
-        std::array<VkSubpassDependency, 2> deps{};
-        deps[0].srcSubpass    = VK_SUBPASS_EXTERNAL;
-        deps[0].dstSubpass    = 0;
-        deps[0].srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-        deps[0].dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-        deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+        std::array<VkSubpassDependency, 2> dp_deps{};
+        dp_deps[0].srcSubpass    = VK_SUBPASS_EXTERNAL;
+        dp_deps[0].dstSubpass    = 0;
+        dp_deps[0].srcStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+        dp_deps[0].dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+        dp_deps[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        dp_deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
-        deps[1].srcSubpass    = 0;
-        deps[1].dstSubpass    = VK_SUBPASS_EXTERNAL;
-        deps[1].srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-        deps[1].dstStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-        deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        deps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        dp_deps[1].srcSubpass    = 0;
+        dp_deps[1].dstSubpass    = VK_SUBPASS_EXTERNAL;
+        dp_deps[1].srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+        dp_deps[1].dstStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        dp_deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        dp_deps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
-        VkRenderPassCreateInfo ci{};
-        ci.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-        ci.attachmentCount = (uint32_t)fw_atts.size();
-        ci.pAttachments    = fw_atts.data();
-        ci.subpassCount    = 1;
-        ci.pSubpasses      = &subpass;
-        ci.dependencyCount = (uint32_t)deps.size();
-        ci.pDependencies   = deps.data();
-        VK_CHECK(vkCreateRenderPass(m_ctx.device(), &ci, nullptr, &m_forward_pass));
+        VkRenderPassCreateInfo ci2{};
+        ci2.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        ci2.attachmentCount = (uint32_t)dp_atts.size();
+        ci2.pAttachments    = dp_atts.data();
+        ci2.subpassCount    = 1;
+        ci2.pSubpasses      = &subpass;
+        ci2.dependencyCount = (uint32_t)dp_deps.size();
+        ci2.pDependencies   = dp_deps.data();
+        VK_CHECK(vkCreateRenderPass(m_ctx.device(), &ci2, nullptr, &m_depth_pre_pass));
     }
 
     // --- Bloom pass (unchanged) ---
@@ -1066,6 +1067,16 @@ bool VulkanRenderer::create_render_passes_() {
     VkAttachmentReference taa_ref{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
     m_taa_pass = make_render_pass(m_ctx.device(), {taa_att}, {taa_ref}, nullptr);
 
+    // --- SSR pass: shared by raw ray march and temporal resolve ---
+    const VkAttachmentDescription ssr_att{
+        0, SSR_FORMAT, VK_SAMPLE_COUNT_1_BIT,
+        VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_STORE,
+        VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+    };
+    VkAttachmentReference ssr_ref{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    m_ssr_pass = make_render_pass(m_ctx.device(), {ssr_att}, {ssr_ref}, nullptr);
+
     return true;
 }
 
@@ -1079,13 +1090,13 @@ void VulkanRenderer::destroy_render_passes_() {
     destroy(m_imgui_pass);
     destroy(m_tonemap_pass);
     destroy(m_bloom_pass);
-    destroy(m_forward_pass);
-    destroy(m_light_pass);
-    destroy(m_gbuf_pass);
+    destroy(m_ssr_pass);
+    destroy(m_depth_pre_pass);
     destroy(m_shadow_pass);
     destroy(m_vsm_pass);
     destroy(m_ssao_pass);
     destroy(m_taa_pass);
+    // m_fwd_plus_pass is owned by destroy_swapchain_targets_() since it depends on sample count
 }
 
 bool VulkanRenderer::create_swapchain_targets_() {
@@ -1106,21 +1117,15 @@ bool VulkanRenderer::create_swapchain_targets_() {
         VK_IMAGE_ASPECT_DEPTH_BIT,
         false);
 
-    // G-buffer attachments
-    m_gbuf0 = vk::create_attachment(m_ctx, extent.width, extent.height,
-        GBUF0_FORMAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-        VK_IMAGE_ASPECT_COLOR_BIT, true);
+    // gbuf1: world normals written by depth pre-pass, read by SSAO
     m_gbuf1 = vk::create_attachment(m_ctx, extent.width, extent.height,
         GBUF1_FORMAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT, true);
-    m_gbuf2 = vk::create_attachment(m_ctx, extent.width, extent.height,
-        GBUF2_FORMAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-        VK_IMAGE_ASPECT_COLOR_BIT, true);
-    m_gbuf3 = vk::create_attachment(m_ctx, extent.width, extent.height,
-        GBUF3_FORMAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+    m_gbuf_roughness = vk::create_attachment(m_ctx, extent.width, extent.height,
+        ROUGHNESS_FORMAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT, true);
 
-    // Depth sampler for deferred lighting (non-compare, nearest, raw depth read)
+    // Depth sampler for forward+ lighting (non-compare, nearest, raw depth read)
     {
         VkSamplerCreateInfo si{};
         si.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -1131,6 +1136,129 @@ bool VulkanRenderer::create_swapchain_targets_() {
         si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         VK_CHECK(vkCreateSampler(m_ctx.device(), &si, nullptr, &m_hdr_depth_sampler));
+    }
+
+    // Forward+ depth: allocated at current AA mode sample count
+    {
+        auto sc = get_sample_count_();
+        m_fwd_depth = vk::create_attachment(m_ctx, extent.width, extent.height,
+            DEPTH_FORMAT,
+            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+            VK_IMAGE_ASPECT_DEPTH_BIT,
+            false, sc);
+
+        // MSAA color buffer (only when MSAA)
+        if (sc != VK_SAMPLE_COUNT_1_BIT) {
+            m_msaa_color = vk::create_attachment(m_ctx, extent.width, extent.height,
+                HDR_FORMAT,
+                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT,
+                false, sc);
+        }
+    }
+
+    // Build m_fwd_plus_pass: depends on sample count
+    {
+        auto sc = get_sample_count_();
+        if (sc == VK_SAMPLE_COUNT_1_BIT) {
+            // Non-MSAA: single color att (hdr_color) + depth (fwd_depth)
+            // hdr_color rests at SHADER_READ_ONLY; pass transitions it internally
+            const std::array<VkAttachmentDescription, 2> fwd_atts = {{
+                {0, HDR_FORMAT, VK_SAMPLE_COUNT_1_BIT,
+                 VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE,
+                 VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                {0, DEPTH_FORMAT, VK_SAMPLE_COUNT_1_BIT,
+                 VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                 VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                 VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL},
+            }};
+            VkAttachmentReference fwd_color{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+            VkAttachmentReference fwd_depth{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+
+            VkSubpassDescription subpass{};
+            subpass.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
+            subpass.colorAttachmentCount    = 1;
+            subpass.pColorAttachments       = &fwd_color;
+            subpass.pDepthStencilAttachment = &fwd_depth;
+
+            std::array<VkSubpassDependency, 2> fwd_deps{};
+            fwd_deps[0].srcSubpass    = VK_SUBPASS_EXTERNAL;
+            fwd_deps[0].dstSubpass    = 0;
+            fwd_deps[0].srcStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            fwd_deps[0].dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+            fwd_deps[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            fwd_deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+            fwd_deps[1].srcSubpass    = 0;
+            fwd_deps[1].dstSubpass    = VK_SUBPASS_EXTERNAL;
+            fwd_deps[1].srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+            fwd_deps[1].dstStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            fwd_deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            fwd_deps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+            VkRenderPassCreateInfo ci{};
+            ci.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+            ci.attachmentCount = (uint32_t)fwd_atts.size();
+            ci.pAttachments    = fwd_atts.data();
+            ci.subpassCount    = 1;
+            ci.pSubpasses      = &subpass;
+            ci.dependencyCount = (uint32_t)fwd_deps.size();
+            ci.pDependencies   = fwd_deps.data();
+            VK_CHECK(vkCreateRenderPass(m_ctx.device(), &ci, nullptr, &m_fwd_plus_pass));
+        } else {
+            // MSAA: att0=msaa_color (CLEAR→DONT_CARE), att1=fwd_depth (CLEAR→DONT_CARE),
+            //       att2=hdr_color resolve (DONT_CARE→STORE, SHADER_READ_ONLY→SHADER_READ_ONLY)
+            const std::array<VkAttachmentDescription, 3> msaa_atts = {{
+                {0, HDR_FORMAT, sc,
+                 VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                 VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                 VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+                {0, DEPTH_FORMAT, sc,
+                 VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                 VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                 VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL},
+                {0, HDR_FORMAT, VK_SAMPLE_COUNT_1_BIT,
+                 VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_STORE,
+                 VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+            }};
+            VkAttachmentReference msaa_color{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+            VkAttachmentReference msaa_depth{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+            VkAttachmentReference msaa_resolve{2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+
+            VkSubpassDescription subpass{};
+            subpass.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
+            subpass.colorAttachmentCount    = 1;
+            subpass.pColorAttachments       = &msaa_color;
+            subpass.pResolveAttachments     = &msaa_resolve;
+            subpass.pDepthStencilAttachment = &msaa_depth;
+
+            std::array<VkSubpassDependency, 2> msaa_deps{};
+            msaa_deps[0].srcSubpass    = VK_SUBPASS_EXTERNAL;
+            msaa_deps[0].dstSubpass    = 0;
+            msaa_deps[0].srcStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            msaa_deps[0].dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+            msaa_deps[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            msaa_deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+            msaa_deps[1].srcSubpass    = 0;
+            msaa_deps[1].dstSubpass    = VK_SUBPASS_EXTERNAL;
+            msaa_deps[1].srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+            msaa_deps[1].dstStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            msaa_deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            msaa_deps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+            VkRenderPassCreateInfo ci{};
+            ci.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+            ci.attachmentCount = (uint32_t)msaa_atts.size();
+            ci.pAttachments    = msaa_atts.data();
+            ci.subpassCount    = 1;
+            ci.pSubpasses      = &subpass;
+            ci.dependencyCount = (uint32_t)msaa_deps.size();
+            ci.pDependencies   = msaa_deps.data();
+            VK_CHECK(vkCreateRenderPass(m_ctx.device(), &ci, nullptr, &m_fwd_plus_pass));
+        }
     }
 
     const uint32_t bloom_w = std::max(1u, extent.width / 2);
@@ -1160,26 +1288,6 @@ bool VulkanRenderer::create_swapchain_targets_() {
         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT, true);
 
-    // Shadow accumulation ping-pong textures (R16_SFLOAT, screen resolution)
-    for (int i = 0; i < 2; ++i) {
-        m_shadow_accum[i] = vk::create_attachment(
-            m_ctx, extent.width, extent.height,
-            SHADOW_ACCUM_FORMAT,
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            VK_IMAGE_ASPECT_COLOR_BIT, true);
-    }
-    {
-        VkSamplerCreateInfo si{};
-        si.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-        si.magFilter    = VK_FILTER_LINEAR;
-        si.minFilter    = VK_FILTER_LINEAR;
-        si.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-        si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        VK_CHECK(vkCreateSampler(m_ctx.device(), &si, nullptr, &m_shadow_accum_sampler));
-    }
-
     // TAA color ping-pong textures (HDR_FORMAT, screen resolution)
     for (int i = 0; i < 2; ++i) {
         m_taa_color[i] = vk::create_attachment(
@@ -1189,16 +1297,31 @@ bool VulkanRenderer::create_swapchain_targets_() {
             VK_IMAGE_ASPECT_COLOR_BIT, true);
     }
 
-    // Transition all images to their expected initial layouts
-    auto cmd = m_ctx.begin_single_cmd();
-    // Color attachments → SHADER_READ_ONLY (resting state between frames)
-    for (auto* img : {&m_hdr_color, &m_gbuf0, &m_gbuf1, &m_gbuf2, &m_gbuf3, &m_bloom_a, &m_bloom_b, &m_ssao, &m_ssao_blur, &m_shadow_accum[0], &m_shadow_accum[1], &m_taa_color[0], &m_taa_color[1]}) {
-        vk::transition_image_layout(cmd, img->image, VK_IMAGE_ASPECT_COLOR_BIT,
-            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    // SSR textures (raw + temporal ping-pong)
+    m_ssr_raw = vk::create_attachment(
+        m_ctx, extent.width, extent.height,
+        SSR_FORMAT,
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT, true);
+    for (int i = 0; i < 2; ++i) {
+        m_ssr_history[i] = vk::create_attachment(
+            m_ctx, extent.width, extent.height,
+            SSR_FORMAT,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT, true);
     }
-    // Depth → DEPTH_STENCIL_READ_ONLY (resting state; gbuf pass transitions to DS_ATT before writing)
+    m_ssr_temporal_idx = 0;
+
+    // Transition images to their expected resting layouts
+    auto cmd = m_ctx.begin_single_cmd();
+    // hdr_color, gbuf1, gbuf_roughness, bloom, SSAO, TAA colors, SSR targets → SHADER_READ_ONLY
+    for (auto* img : {&m_hdr_color, &m_gbuf1, &m_gbuf_roughness, &m_bloom_a, &m_bloom_b, &m_ssao, &m_ssao_blur, &m_taa_color[0], &m_taa_color[1], &m_ssr_raw, &m_ssr_history[0], &m_ssr_history[1]}) {
+        vk::transition_image_layout(cmd, img->image, VK_IMAGE_ASPECT_COLOR_BIT,
+            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    }
+    // hdr_depth → DEPTH_STENCIL_READ_ONLY (resting state; depth_pre_pass transitions internally)
     vk::transition_image_layout(cmd, m_hdr_depth.image, VK_IMAGE_ASPECT_DEPTH_BIT,
-        VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
     m_ctx.end_single_cmd(cmd);
 
     for (uint32_t i = 0; i < 4; ++i) {
@@ -1210,21 +1333,33 @@ bool VulkanRenderer::create_swapchain_targets_() {
                                          {m_vsm_layer_views[i], m_shadow_layer_views[i]},
                                          SHADOW_SIZE, SHADOW_SIZE);
     }
-    m_gbuf_fb= make_framebuffer(m_ctx.device(), m_gbuf_pass,
-                                    {m_gbuf0.view, m_gbuf1.view, m_gbuf2.view, m_gbuf3.view, m_hdr_depth.view},
-                                    extent.width, extent.height);
-    m_light_fbs[0] = make_framebuffer(m_ctx.device(), m_light_pass,
-                                       {m_hdr_color.view, m_shadow_accum[0].view}, extent.width, extent.height);
-    m_light_fbs[1] = make_framebuffer(m_ctx.device(), m_light_pass,
-                                       {m_hdr_color.view, m_shadow_accum[1].view}, extent.width, extent.height);
-    m_forward_fb = make_framebuffer(m_ctx.device(), m_forward_pass,
-                                    {m_hdr_color.view, m_hdr_depth.view}, extent.width, extent.height);
+
+    // Depth pre-pass framebuffer: gbuf1 (normals) + gbuf_roughness + hdr_depth
+    m_depth_pre_fb = make_framebuffer(m_ctx.device(), m_depth_pre_pass,
+        {m_gbuf1.view, m_gbuf_roughness.view, m_hdr_depth.view}, extent.width, extent.height);
+
+    // Forward+ pass framebuffer: depends on MSAA
+    {
+        auto sc = get_sample_count_();
+        if (sc == VK_SAMPLE_COUNT_1_BIT) {
+            m_fwd_plus_fb = make_framebuffer(m_ctx.device(), m_fwd_plus_pass,
+                {m_hdr_color.view, m_fwd_depth.view}, extent.width, extent.height);
+        } else {
+            m_fwd_plus_fb = make_framebuffer(m_ctx.device(), m_fwd_plus_pass,
+                {m_msaa_color.view, m_fwd_depth.view, m_hdr_color.view}, extent.width, extent.height);
+        }
+    }
+
     m_bloom_a_fb = make_framebuffer(m_ctx.device(), m_bloom_pass, {m_bloom_a.view}, bloom_w, bloom_h);
     m_bloom_b_fb = make_framebuffer(m_ctx.device(), m_bloom_pass, {m_bloom_b.view}, bloom_w, bloom_h);
     m_ssao_fb      = make_framebuffer(m_ctx.device(), m_ssao_pass, {m_ssao.view},      extent.width, extent.height);
     m_ssao_blur_fb = make_framebuffer(m_ctx.device(), m_ssao_pass, {m_ssao_blur.view}, extent.width, extent.height);
     for (int i = 0; i < 2; ++i) {
         m_taa_fbs[i] = make_framebuffer(m_ctx.device(), m_taa_pass, {m_taa_color[i].view}, extent.width, extent.height);
+    }
+    m_ssr_raw_fb = make_framebuffer(m_ctx.device(), m_ssr_pass, {m_ssr_raw.view}, extent.width, extent.height);
+    for (int i = 0; i < 2; ++i) {
+        m_ssr_history_fbs[i] = make_framebuffer(m_ctx.device(), m_ssr_pass, {m_ssr_history[i].view}, extent.width, extent.height);
     }
 
     m_tonemap_fbs.resize(m_swapchain.image_count());
@@ -1250,17 +1385,20 @@ void VulkanRenderer::destroy_swapchain_targets_() {
     if (m_bloom_a_fb)  { vkDestroyFramebuffer(m_ctx.device(), m_bloom_a_fb,  nullptr); m_bloom_a_fb  = VK_NULL_HANDLE; }
     if (m_ssao_blur_fb) { vkDestroyFramebuffer(m_ctx.device(), m_ssao_blur_fb, nullptr); m_ssao_blur_fb = VK_NULL_HANDLE; }
     if (m_ssao_fb)      { vkDestroyFramebuffer(m_ctx.device(), m_ssao_fb,      nullptr); m_ssao_fb      = VK_NULL_HANDLE; }
-    if (m_forward_fb)  { vkDestroyFramebuffer(m_ctx.device(), m_forward_fb,  nullptr); m_forward_fb  = VK_NULL_HANDLE; }
-    for (int i = 0; i < 2; ++i) {
-        if (m_light_fbs[i]) { vkDestroyFramebuffer(m_ctx.device(), m_light_fbs[i], nullptr); m_light_fbs[i] = VK_NULL_HANDLE; }
-    }
-    if (m_shadow_accum_sampler) { vkDestroySampler(m_ctx.device(), m_shadow_accum_sampler, nullptr); m_shadow_accum_sampler = VK_NULL_HANDLE; }
-    for (int i = 0; i < 2; ++i) m_shadow_accum[i].destroy(m_ctx.device(), m_ctx.allocator());
+    if (m_fwd_plus_fb) { vkDestroyFramebuffer(m_ctx.device(), m_fwd_plus_fb, nullptr); m_fwd_plus_fb = VK_NULL_HANDLE; }
+    if (m_fwd_plus_pass) { vkDestroyRenderPass(m_ctx.device(), m_fwd_plus_pass, nullptr); m_fwd_plus_pass = VK_NULL_HANDLE; }
+    if (m_depth_pre_fb) { vkDestroyFramebuffer(m_ctx.device(), m_depth_pre_fb, nullptr); m_depth_pre_fb = VK_NULL_HANDLE; }
+    if (m_ssr_raw_fb) { vkDestroyFramebuffer(m_ctx.device(), m_ssr_raw_fb, nullptr); m_ssr_raw_fb = VK_NULL_HANDLE; }
     for (int i = 0; i < 2; ++i) {
         if (m_taa_fbs[i]) { vkDestroyFramebuffer(m_ctx.device(), m_taa_fbs[i], nullptr); m_taa_fbs[i] = VK_NULL_HANDLE; }
+        if (m_ssr_history_fbs[i]) { vkDestroyFramebuffer(m_ctx.device(), m_ssr_history_fbs[i], nullptr); m_ssr_history_fbs[i] = VK_NULL_HANDLE; }
     }
-    for (int i = 0; i < 2; ++i) m_taa_color[i].destroy(m_ctx.device(), m_ctx.allocator());
-    if (m_gbuf_fb)     { vkDestroyFramebuffer(m_ctx.device(), m_gbuf_fb,     nullptr); m_gbuf_fb     = VK_NULL_HANDLE; }
+    m_ssr_raw.destroy(m_ctx.device(), m_ctx.allocator());
+    for (int i = 0; i < 2; ++i) {
+        m_taa_color[i].destroy(m_ctx.device(), m_ctx.allocator());
+        m_ssr_history[i].destroy(m_ctx.device(), m_ctx.allocator());
+    }
+    m_ssr_temporal_idx = 0;
     for (uint32_t i = 0; i < 4; ++i) {
         if (m_shadow_fbs[i]) { vkDestroyFramebuffer(m_ctx.device(), m_shadow_fbs[i], nullptr); m_shadow_fbs[i] = VK_NULL_HANDLE; }
     }
@@ -1274,10 +1412,10 @@ void VulkanRenderer::destroy_swapchain_targets_() {
     m_bloom_a.destroy(m_ctx.device(), m_ctx.allocator());
     m_ssao_blur.destroy(m_ctx.device(), m_ctx.allocator());
     m_ssao.destroy(m_ctx.device(), m_ctx.allocator());
-    m_gbuf3.destroy(m_ctx.device(), m_ctx.allocator());
-    m_gbuf2.destroy(m_ctx.device(), m_ctx.allocator());
+    m_msaa_color.destroy(m_ctx.device(), m_ctx.allocator());
+    m_fwd_depth.destroy(m_ctx.device(), m_ctx.allocator());
+    m_gbuf_roughness.destroy(m_ctx.device(), m_ctx.allocator());
     m_gbuf1.destroy(m_ctx.device(), m_ctx.allocator());
-    m_gbuf0.destroy(m_ctx.device(), m_ctx.allocator());
     m_hdr_depth.destroy(m_ctx.device(), m_ctx.allocator());
     m_hdr_color.destroy(m_ctx.device(), m_ctx.allocator());
 }
@@ -1357,70 +1495,102 @@ bool VulkanRenderer::create_pipelines_() {
         m_vsm_pipe_double = vk::build_pipeline(m_ctx.device(), desc);
     }
 
-    // --- PBR layout: shared by gbuf + forward passes ---
+    // --- Depth pre-pass layout: {frame, material} + PbrPush ---
     {
         vk::LayoutDesc layout{};
         layout.set_layouts = {m_desc.frame_layout(), m_desc.material_layout()};
         layout.push_ranges = {{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PbrPush)}};
-        m_pbr_layout = vk::build_pipeline_layout(m_ctx.device(), layout);
+        m_depth_pre_layout = vk::build_pipeline_layout(m_ctx.device(), layout);
     }
 
-    // --- G-buffer pipelines: pbr.vert + gbuf.frag, 4 MRT, opaque/mask only ---
-    {
-        vk::PipelineDesc desc{};
-        desc.vert_code = pbr_vert_glsl;
-        desc.vert_size = sizeof(pbr_vert_glsl);
-        desc.frag_code = gbuf_frag_glsl;
-        desc.frag_size = sizeof(gbuf_frag_glsl);
-        desc.vertex_bindings = bindings;
-        desc.vertex_attribs = attribs;
-        desc.layout = m_pbr_layout;
-        desc.render_pass = m_gbuf_pass;
-        desc.color_attachment_count = 4;
-        desc.blend_enable = false;
-        m_gbuf_pipe = vk::build_pipeline(m_ctx.device(), desc);
-        desc.cull_mode = VK_CULL_MODE_NONE;
-        m_gbuf_pipe_double = vk::build_pipeline(m_ctx.device(), desc);
-    }
-
-    // --- Deferred lighting pipeline: fullscreen, reads gbuf + depth ---
+    // --- Forward+ object layout: {frame, material, fwd_plus_input} + PbrPush ---
     {
         vk::LayoutDesc layout{};
-        layout.set_layouts = {m_desc.frame_layout(), m_desc.deferred_input_layout()};
-        layout.push_ranges = {{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(SkyPush)}};
-        m_deferred_layout = vk::build_pipeline_layout(m_ctx.device(), layout);
-
-        vk::PipelineDesc desc{};
-        desc.vert_code = fullscreen_vert_glsl;
-        desc.vert_size = sizeof(fullscreen_vert_glsl);
-        desc.frag_code = deferred_light_frag_glsl;
-        desc.frag_size = sizeof(deferred_light_frag_glsl);
-        desc.layout = m_deferred_layout;
-        desc.render_pass = m_light_pass;
-        desc.depth_test = false;
-        desc.depth_write = false;
-        desc.cull_mode = VK_CULL_MODE_NONE;
-        desc.color_attachment_count = 2;
-        m_deferred_pipe = vk::build_pipeline(m_ctx.device(), desc);
+        layout.set_layouts = {m_desc.frame_layout(), m_desc.material_layout(), m_desc.fwd_plus_input_layout()};
+        layout.push_ranges = {{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PbrPush)}};
+        m_fwd_plus_obj_layout = vk::build_pipeline_layout(m_ctx.device(), layout);
     }
 
-    // --- Forward transparent pipelines: pbr.vert + pbr.frag, blend, depth read-only ---
+    // --- Sky forward layout: {frame, sky_cube} + SkyPush ---
+    {
+        vk::LayoutDesc layout{};
+        layout.set_layouts = {m_desc.frame_layout(), m_desc.single_sampler_layout()};
+        layout.push_ranges = {{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(SkyPush)}};
+        m_sky_fwd_layout = vk::build_pipeline_layout(m_ctx.device(), layout);
+    }
+
+    // --- Depth pre-pass pipelines (opaque + mask, no blend, write depth + normals) ---
     {
         vk::PipelineDesc desc{};
-        desc.vert_code = pbr_vert_glsl;
-        desc.vert_size = sizeof(pbr_vert_glsl);
-        desc.frag_code = pbr_frag_glsl;
-        desc.frag_size = sizeof(pbr_frag_glsl);
+        desc.vert_code   = depth_pre_vert_glsl;
+        desc.vert_size   = sizeof(depth_pre_vert_glsl);
+        desc.frag_code   = depth_pre_frag_glsl;
+        desc.frag_size   = sizeof(depth_pre_frag_glsl);
         desc.vertex_bindings = bindings;
-        desc.vertex_attribs = attribs;
-        desc.layout = m_pbr_layout;
-        desc.render_pass = m_forward_pass;
-        desc.blend_enable = true;
-        desc.depth_write = false;
-        desc.depth_test = true;
-        m_forward_pipe = vk::build_pipeline(m_ctx.device(), desc);
+        desc.vertex_attribs  = attribs;
+        desc.layout      = m_depth_pre_layout;
+        desc.render_pass = m_depth_pre_pass;
+        desc.blend_enable = false;
+        desc.color_attachment_count = 2;
+        m_depth_pre_pipe = vk::build_pipeline(m_ctx.device(), desc);
         desc.cull_mode = VK_CULL_MODE_NONE;
-        m_forward_pipe_double = vk::build_pipeline(m_ctx.device(), desc);
+        m_depth_pre_pipe_double = vk::build_pipeline(m_ctx.device(), desc);
+    }
+
+    // --- Forward+ sky + opaque + blend pipelines ---
+    auto sc = get_sample_count_();
+    {
+        // Sky: fullscreen, depth=off, cull=none
+        vk::PipelineDesc desc{};
+        desc.vert_code   = fullscreen_vert_glsl;
+        desc.vert_size   = sizeof(fullscreen_vert_glsl);
+        desc.frag_code   = sky_frag_glsl;
+        desc.frag_size   = sizeof(sky_frag_glsl);
+        desc.layout      = m_sky_fwd_layout;
+        desc.render_pass = m_fwd_plus_pass;
+        desc.depth_test  = false;
+        desc.depth_write = false;
+        desc.cull_mode   = VK_CULL_MODE_NONE;
+        desc.sample_count = sc;
+        m_sky_fwd_pipe = vk::build_pipeline(m_ctx.device(), desc);
+    }
+    {
+        // Opaque/mask: depth test + write, back-cull
+        vk::PipelineDesc desc{};
+        desc.vert_code   = forward_plus_vert_glsl;
+        desc.vert_size   = sizeof(forward_plus_vert_glsl);
+        desc.frag_code   = forward_plus_frag_glsl;
+        desc.frag_size   = sizeof(forward_plus_frag_glsl);
+        desc.vertex_bindings = bindings;
+        desc.vertex_attribs  = attribs;
+        desc.layout      = m_fwd_plus_obj_layout;
+        desc.render_pass = m_fwd_plus_pass;
+        desc.blend_enable = false;
+        desc.depth_test   = true;
+        desc.depth_write  = true;
+        desc.sample_count = sc;
+        m_fwd_opaque_pipe = vk::build_pipeline(m_ctx.device(), desc);
+        desc.cull_mode = VK_CULL_MODE_NONE;
+        m_fwd_opaque_pipe_double = vk::build_pipeline(m_ctx.device(), desc);
+    }
+    {
+        // Blend: depth test, no depth write, back-cull
+        vk::PipelineDesc desc{};
+        desc.vert_code   = forward_plus_vert_glsl;
+        desc.vert_size   = sizeof(forward_plus_vert_glsl);
+        desc.frag_code   = forward_plus_frag_glsl;
+        desc.frag_size   = sizeof(forward_plus_frag_glsl);
+        desc.vertex_bindings = bindings;
+        desc.vertex_attribs  = attribs;
+        desc.layout      = m_fwd_plus_obj_layout;
+        desc.render_pass = m_fwd_plus_pass;
+        desc.blend_enable = true;
+        desc.depth_test   = true;
+        desc.depth_write  = false;
+        desc.sample_count = sc;
+        m_fwd_blend_pipe = vk::build_pipeline(m_ctx.device(), desc);
+        desc.cull_mode = VK_CULL_MODE_NONE;
+        m_fwd_blend_pipe_double = vk::build_pipeline(m_ctx.device(), desc);
     }
 
     // --- Bloom pipelines (unchanged) ---
@@ -1529,6 +1699,36 @@ bool VulkanRenderer::create_pipelines_() {
         m_taa_pipe = vk::build_pipeline(m_ctx.device(), desc);
     }
 
+    // --- SSR pipelines ---
+    {
+        vk::LayoutDesc ray_layout{};
+        ray_layout.set_layouts = {m_desc.ssr_ray_input_layout(), m_desc.frame_layout()};
+        ray_layout.push_ranges = {{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(Vec4Push)}};
+        m_ssr_ray_layout = vk::build_pipeline_layout(m_ctx.device(), ray_layout);
+
+        vk::PipelineDesc desc{};
+        desc.vert_code   = fullscreen_vert_glsl;
+        desc.vert_size   = sizeof(fullscreen_vert_glsl);
+        desc.frag_code   = ssr_frag_glsl;
+        desc.frag_size   = sizeof(ssr_frag_glsl);
+        desc.layout      = m_ssr_ray_layout;
+        desc.render_pass = m_ssr_pass;
+        desc.depth_test  = false;
+        desc.depth_write = false;
+        desc.cull_mode   = VK_CULL_MODE_NONE;
+        m_ssr_ray_pipe = vk::build_pipeline(m_ctx.device(), desc);
+
+        vk::LayoutDesc temporal_layout{};
+        temporal_layout.set_layouts = {m_desc.ssr_temporal_input_layout(), m_desc.frame_layout()};
+        temporal_layout.push_ranges = {{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(Vec4Push)}};
+        m_ssr_temporal_layout = vk::build_pipeline_layout(m_ctx.device(), temporal_layout);
+
+        desc.frag_code   = ssr_temporal_frag_glsl;
+        desc.frag_size   = sizeof(ssr_temporal_frag_glsl);
+        desc.layout      = m_ssr_temporal_layout;
+        m_ssr_temporal_pipe = vk::build_pipeline(m_ctx.device(), desc);
+    }
+
     return true;
 }
 
@@ -1551,12 +1751,16 @@ void VulkanRenderer::destroy_pipelines_() {
     destroy_pipe(m_bright_pipe);
     destroy_pipe(m_ssao_blur_pipe);
     destroy_pipe(m_ssao_pipe);
+    destroy_pipe(m_ssr_temporal_pipe);
+    destroy_pipe(m_ssr_ray_pipe);
     destroy_pipe(m_taa_pipe);
-    destroy_pipe(m_forward_pipe_double);
-    destroy_pipe(m_forward_pipe);
-    destroy_pipe(m_deferred_pipe);
-    destroy_pipe(m_gbuf_pipe_double);
-    destroy_pipe(m_gbuf_pipe);
+    destroy_pipe(m_fwd_blend_pipe_double);
+    destroy_pipe(m_fwd_blend_pipe);
+    destroy_pipe(m_fwd_opaque_pipe_double);
+    destroy_pipe(m_fwd_opaque_pipe);
+    destroy_pipe(m_sky_fwd_pipe);
+    destroy_pipe(m_depth_pre_pipe_double);
+    destroy_pipe(m_depth_pre_pipe);
     destroy_pipe(m_shadow_pipe_double);
     destroy_pipe(m_shadow_pipe);
     destroy_pipe(m_vsm_pipe_double);
@@ -1567,9 +1771,12 @@ void VulkanRenderer::destroy_pipelines_() {
     destroy_layout(m_bright_layout);
     destroy_layout(m_ssao_blur_layout);
     destroy_layout(m_ssao_layout);
+    destroy_layout(m_ssr_temporal_layout);
+    destroy_layout(m_ssr_ray_layout);
     destroy_layout(m_taa_layout);
-    destroy_layout(m_deferred_layout);
-    destroy_layout(m_pbr_layout);
+    destroy_layout(m_sky_fwd_layout);
+    destroy_layout(m_fwd_plus_obj_layout);
+    destroy_layout(m_depth_pre_layout);
     destroy_layout(m_shadow_layout);
     destroy_layout(m_vsm_layout);
 }
@@ -1598,7 +1805,7 @@ bool VulkanRenderer::update_frame_ubo_(uint32_t frame_idx, vk::FrameUBO& out_ubo
         }
         return r;
     };
-    if (m_settings.taa_enabled && m_w > 0 && m_h > 0) {
+    if (m_settings.aa_mode == AaMode::TAA && m_w > 0 && m_h > 0) {
         int jidx = int(m_color_taa_idx) % 8;
         float jx = (halton(jidx, 2) - 0.5f) * 2.0f / float(m_w);
         float jy = (halton(jidx, 3) - 0.5f) * 2.0f / float(m_h);
@@ -1657,7 +1864,7 @@ bool VulkanRenderer::update_frame_ubo_(uint32_t frame_idx, vk::FrameUBO& out_ubo
     out_ubo.temporalParams[0] = m_settings.temporal_shadow_alpha;
     out_ubo.temporalParams[1] = m_settings.temporal_shadow_enabled ? 1.0f : 0.0f;
     out_ubo.temporalParams[2] = m_settings.temporal_shadow_max_dist;
-    out_ubo.temporalParams[3] = 0.0f;
+    out_ubo.temporalParams[3] = m_elapsed_time;
     out_ubo.iblParams[0] = m_settings.ibl_enabled ? 1.0f : 0.0f;
     out_ubo.iblParams[1] = m_settings.ibl_intensity;
     out_ubo.iblParams[2] = m_settings.ibl_diffuse_scale;
@@ -1837,18 +2044,16 @@ void VulkanRenderer::record_vsm_shadow_pass_(VkCommandBuffer cmd, VkDescriptorSe
     // Shadow depth layers are in SHADER_READ_ONLY_OPTIMAL (per finalLayout).
 }
 
-void VulkanRenderer::record_gbuf_pass_(VkCommandBuffer cmd, VkDescriptorSet frame_set) {
-    std::array<VkClearValue, 5> clears{};
-    clears[0].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
-    clears[1].color = {{0.0f, 0.0f, 0.0f, 0.0f}};  // gbuf1: no geometry written
-    clears[2].color = {{0.0f, 0.5f, 0.0f, 0.0f}};
-    clears[3].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
-    clears[4].depthStencil = {1.0f, 0};
+void VulkanRenderer::record_depth_pre_pass_(VkCommandBuffer cmd, VkDescriptorSet frame_set) {
+    std::array<VkClearValue, 3> clears{};
+    clears[0].color        = {{0.0f, 0.0f, 0.0f, 0.0f}};  // normals
+    clears[1].color        = {{1.0f, 1.0f, 1.0f, 1.0f}};  // roughness
+    clears[2].depthStencil = {1.0f, 0};
 
     VkRenderPassBeginInfo rp{};
     rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rp.renderPass = m_gbuf_pass;
-    rp.framebuffer = m_gbuf_fb;
+    rp.renderPass  = m_depth_pre_pass;
+    rp.framebuffer = m_depth_pre_fb;
     rp.renderArea.extent = m_swapchain.extent();
     rp.clearValueCount = (uint32_t)clears.size();
     rp.pClearValues = clears.data();
@@ -1873,38 +2078,35 @@ void VulkanRenderer::record_gbuf_pass_(VkCommandBuffer cmd, VkDescriptorSet fram
         auto* mesh = static_cast<GpuMesh*>(draw.mesh->gpu_data());
         if (!mesh) continue;
 
-        const vk::VulkanImage& albedo   = pick_tex(draw.material.albedo,       m_fallback_white);
-        const vk::VulkanImage& normal   = pick_tex(draw.material.normal_map,    m_fallback_normal);
-        const vk::VulkanImage& mr       = pick_tex(draw.material.mr_map,        m_fallback_mr);
-        const vk::VulkanImage& emissive = pick_tex(draw.material.emissive_tex,  m_fallback_black);
+        const vk::VulkanImage& albedo = pick_tex(draw.material.albedo, m_fallback_white);
+        const vk::VulkanImage& mr = pick_tex(draw.material.mr_map, m_fallback_mr);
 
+        // depth_pre only needs set 0 (frame) + set 1 binding 0 (albedo for alpha mask)
         VkDescriptorSet mat_set = m_desc.alloc_material_set(
             m_ctx.device(),
             albedo.view, albedo.sampler,
-            normal.view, normal.sampler,
-            mr.view,     mr.sampler,
-            emissive.view, emissive.sampler);
+            m_fallback_normal.view, m_fallback_normal.sampler,
+            mr.view, mr.sampler,
+            m_fallback_black.view, m_fallback_black.sampler);
 
         std::array<VkDescriptorSet, 2> sets = {frame_set, mat_set};
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pbr_layout, 0,
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_depth_pre_layout, 0,
                                 (uint32_t)sets.size(), sets.data(), 0, nullptr);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          draw.material.double_sided ? m_gbuf_pipe_double : m_gbuf_pipe);
+                          draw.material.double_sided ? m_depth_pre_pipe_double : m_depth_pre_pipe);
 
-        bool has_emissive_tex = draw.material.emissive_tex && draw.material.emissive_tex->valid();
         PbrPush push{};
         push.model      = draw.transform;
         push.base_color = draw.material.base_color;
         push.pbr = glm::vec4(draw.material.metallic, draw.material.roughness,
                              draw.material.alpha_cutoff,
                              draw.material.alpha_mode == AlphaMode::Mask ? 1.0f : 0.0f);
-        push.emissive = glm::vec4(draw.material.emissive, has_emissive_tex ? 1.0f : 0.0f);
         push.flags = glm::vec4(
             draw.material.lit ? 1.0f : 0.0f,
             draw.material.albedo && draw.material.albedo->valid() ? 1.0f : 0.0f,
-            draw.material.normal_map && draw.material.normal_map->valid() ? 1.0f : 0.0f,
+            0.0f,
             draw.material.mr_map && draw.material.mr_map->valid() ? 1.0f : 0.0f);
-        vkCmdPushConstants(cmd, m_pbr_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+        vkCmdPushConstants(cmd, m_depth_pre_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(push), &push);
 
         VkBuffer vb = mesh->vb.handle;
@@ -1915,14 +2117,14 @@ void VulkanRenderer::record_gbuf_pass_(VkCommandBuffer cmd, VkDescriptorSet fram
     }
 
     vkCmdEndRenderPass(cmd);
+    // After this pass: gbuf1 and hdr_depth rest at SHADER_READ_ONLY / DEPTH_STENCIL_READ_ONLY
+    // (per finalLayout in m_depth_pre_pass render pass)
 }
 
-void VulkanRenderer::record_light_pass_(VkCommandBuffer cmd, VkDescriptorSet frame_set, uint32_t taa_read, uint32_t taa_write) {
-    // gbuf0-3 are in SHADER_READ_ONLY_OPTIMAL (finalLayout of gbuf_pass)
-    // hdr_depth is in DEPTH_STENCIL_READ_ONLY_OPTIMAL (finalLayout of gbuf_pass depth)
+void VulkanRenderer::record_fwd_plus_pass_(VkCommandBuffer cmd, VkDescriptorSet frame_set) {
+    // Build forward+ input descriptor (set 2)
     VkImageView  ssao_view    = m_settings.ssao_enabled ? m_ssao_blur.view    : m_fallback_white.view;
     VkSampler    ssao_sampler = m_settings.ssao_enabled ? m_ssao_blur.sampler : m_fallback_white.sampler;
-    // IBL fallbacks: use real textures if IBL is ready, else fallback black (cube/2D)
     VkImageView  ibl_irr_view  = m_ibl_ready ? m_ibl_irradiance.view  : m_ibl_fallback_cube.view;
     VkSampler    ibl_irr_samp  = m_ibl_ready ? m_ibl_cube_sampler     : m_ibl_cube_sampler;
     VkImageView  ibl_pref_view = m_ibl_ready ? m_ibl_prefilter.view   : m_ibl_fallback_cube.view;
@@ -1930,80 +2132,70 @@ void VulkanRenderer::record_light_pass_(VkCommandBuffer cmd, VkDescriptorSet fra
     VkImageView  ibl_lut_view  = m_ibl_ready ? m_ibl_brdf_lut.view    : m_fallback_black.view;
     VkSampler    ibl_lut_samp  = m_ibl_ready ? m_ibl_lut_sampler      : m_fallback_black.sampler;
 
-    VkDescriptorSet deferred_set = m_desc.alloc_deferred_input_set(
+    VkDescriptorSet fwd_input_set = m_desc.alloc_fwd_plus_set(
         m_ctx.device(),
-        m_gbuf0.view, m_gbuf0.sampler,
-        m_gbuf1.view, m_gbuf1.sampler,
-        m_gbuf2.view, m_gbuf2.sampler,
-        m_gbuf3.view, m_gbuf3.sampler,
-        m_hdr_depth.view, m_hdr_depth_sampler,
         ssao_view, ssao_sampler,
-        m_shadow_accum[taa_read].view, m_shadow_accum_sampler,
-        ibl_irr_view, ibl_irr_samp,
+        ibl_irr_view,  ibl_irr_samp,
         ibl_pref_view, ibl_pref_samp,
-        ibl_lut_view, ibl_lut_samp);
+        ibl_lut_view,  ibl_lut_samp,
+        m_hdr_depth.view, m_hdr_depth_sampler);
 
+    const uint32_t w = m_swapchain.extent().width;
+    const uint32_t h = m_swapchain.extent().height;
+    auto sc = get_sample_count_();
+    bool is_msaa = (sc != VK_SAMPLE_COUNT_1_BIT);
+    uint32_t att_count = is_msaa ? 3 : 2;
+
+    std::array<VkClearValue, 3> clears{};
     glm::vec4 clear_rgb = unpack_rgba(m_clear);
-    VkClearValue clears[2]{};
-    clears[0].color = {{clear_rgb.r, clear_rgb.g, clear_rgb.b, 1.0f}};
-    clears[1].color = {{1.0f, 1.0f, 1.0f, 1.0f}};  // shadow accum: default fully lit
+    clears[0].color = {{clear_rgb.r, clear_rgb.g, clear_rgb.b, 1.0f}};  // color (or msaa)
+    clears[1].depthStencil = {1.0f, 0};                                 // depth
+    clears[2].color = {{clear_rgb.r, clear_rgb.g, clear_rgb.b, 1.0f}}; // resolve (msaa only)
 
     VkRenderPassBeginInfo rp{};
     rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rp.renderPass = m_light_pass;
-    rp.framebuffer = m_light_fbs[taa_write];
-    rp.renderArea.extent = m_swapchain.extent();
-    rp.clearValueCount = 2;
-    rp.pClearValues = clears;
-
-    vkCmdBeginRenderPass(cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
-    VkViewport vp = make_viewport(float(m_swapchain.extent().width), float(m_swapchain.extent().height));
-    VkRect2D sc   = make_scissor(m_swapchain.extent().width, m_swapchain.extent().height);
-    vkCmdSetViewport(cmd, 0, 1, &vp);
-    vkCmdSetScissor(cmd, 0, 1, &sc);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_deferred_pipe);
-
-    std::array<VkDescriptorSet, 2> sets = {frame_set, deferred_set};
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_deferred_layout, 0,
-                            (uint32_t)sets.size(), sets.data(), 0, nullptr);
-
-    SkyPush sky{};
-    if (m_has_sky) {
-        sky.sun_dir   = glm::vec4(glm::normalize(m_sky_sun_dir), 0.0f);
-        sky.zenith    = glm::vec4(m_sky_zenith, 0.0f);
-        sky.horizon   = glm::vec4(m_sky_horizon, 0.0f);
-        sky.sun_color = glm::vec4(m_sky_sun_color, m_sky_sun_cos_r);
-    } else {
-        // No sky: flat clear color, no sun
-        sky.zenith    = glm::vec4(clear_rgb.r, clear_rgb.g, clear_rgb.b, 0.0f);
-        sky.horizon   = glm::vec4(clear_rgb.r, clear_rgb.g, clear_rgb.b, 0.0f);
-        sky.sun_color = glm::vec4(0.0f, 0.0f, 0.0f, 2.0f);  // alpha >= 1 = no sun
-    }
-    vkCmdPushConstants(cmd, m_deferred_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(sky), &sky);
-    vkCmdDraw(cmd, 3, 1, 0, 0);
-    vkCmdEndRenderPass(cmd);
-}
-
-void VulkanRenderer::record_forward_pass_(VkCommandBuffer cmd, VkDescriptorSet frame_set) {
-    // hdr_color is in COLOR_ATTACHMENT_OPTIMAL (caller transitioned it before calling us)
-    // hdr_depth is in DEPTH_STENCIL_READ_ONLY_OPTIMAL
-    std::array<VkClearValue, 2> clears{};
-    // LOAD_OP_LOAD for color — no clear needed (value ignored)
-    clears[1].depthStencil = {1.0f, 0};  // also LOAD for depth — ignored
-
-    VkRenderPassBeginInfo rp{};
-    rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rp.renderPass = m_forward_pass;
-    rp.framebuffer = m_forward_fb;
-    rp.renderArea.extent = m_swapchain.extent();
-    rp.clearValueCount = (uint32_t)clears.size();
+    rp.renderPass = m_fwd_plus_pass;
+    rp.framebuffer = m_fwd_plus_fb;
+    rp.renderArea.extent = {w, h};
+    rp.clearValueCount = att_count;
     rp.pClearValues = clears.data();
 
     vkCmdBeginRenderPass(cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
-    VkViewport vp = make_viewport(float(m_swapchain.extent().width), float(m_swapchain.extent().height));
-    VkRect2D sc   = make_scissor(m_swapchain.extent().width, m_swapchain.extent().height);
+    VkViewport vp = make_viewport(float(w), float(h));
+    VkRect2D scissor = make_scissor(w, h);
     vkCmdSetViewport(cmd, 0, 1, &vp);
-    vkCmdSetScissor(cmd, 0, 1, &sc);
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+    // --- 1. Sky draw (fullscreen, depth=off) ---
+    {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_sky_fwd_pipe);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_sky_fwd_layout,
+                                0, 1, &frame_set, 0, nullptr);
+
+        // Set 1: sky cubemap (HDR when ready, fallback black cube otherwise)
+        bool use_hdr = m_has_hdr_sky && m_ibl_ready;
+        VkImageView  cube_view = use_hdr ? m_ibl_sky.view : m_ibl_fallback_cube.view;
+        VkSampler    cube_samp = m_ibl_cube_sampler;
+        VkDescriptorSet sky_cube_set = m_desc.alloc_single_sampler_set(
+            m_ctx.device(), cube_view, cube_samp);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_sky_fwd_layout,
+                                1, 1, &sky_cube_set, 0, nullptr);
+
+        SkyPush sky{};
+        sky.flags = glm::ivec4(use_hdr ? 1 : 0, 0, 0, 0);
+        if (m_has_sky) {
+            sky.sun_dir   = glm::vec4(glm::normalize(m_sky_sun_dir), 0.0f);
+            sky.zenith    = glm::vec4(m_sky_zenith, 0.0f);
+            sky.horizon   = glm::vec4(m_sky_horizon, 0.0f);
+            sky.sun_color = glm::vec4(m_sky_sun_color, m_sky_sun_cos_r);
+        } else {
+            sky.zenith    = glm::vec4(clear_rgb.r, clear_rgb.g, clear_rgb.b, 0.0f);
+            sky.horizon   = glm::vec4(clear_rgb.r, clear_rgb.g, clear_rgb.b, 0.0f);
+            sky.sun_color = glm::vec4(0.0f, 0.0f, 0.0f, 2.0f);
+        }
+        vkCmdPushConstants(cmd, m_sky_fwd_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(sky), &sky);
+        vkCmdDraw(cmd, 3, 1, 0, 0);
+    }
 
     auto pick_tex = [&](const Texture* tex, const vk::VulkanImage& fallback) -> const vk::VulkanImage& {
         if (tex && tex->valid()) {
@@ -2013,64 +2205,342 @@ void VulkanRenderer::record_forward_pass_(VkCommandBuffer cmd, VkDescriptorSet f
         return fallback;
     };
 
-    // Collect and sort blend draws back-to-front
-    std::vector<const DrawItem*> blend_draws;
-    for (const auto& draw : m_draws) {
-        if (draw.material.alpha_mode == AlphaMode::Blend)
-            blend_draws.push_back(&draw);
-    }
-    const glm::vec3 cam_pos = m_camera.position;
-    std::sort(blend_draws.begin(), blend_draws.end(), [&](const DrawItem* a, const DrawItem* b) {
-        glm::vec3 da = glm::vec3(a->transform[3]) - cam_pos;
-        glm::vec3 db = glm::vec3(b->transform[3]) - cam_pos;
-        return glm::dot(da, da) > glm::dot(db, db);
-    });
+    auto draw_meshes = [&](bool blend) {
+        for (const auto& draw : m_draws) {
+            bool is_blend = (draw.material.alpha_mode == AlphaMode::Blend);
+            if (is_blend != blend) continue;
 
-    for (const auto* draw : blend_draws) {
-        auto* mesh = static_cast<GpuMesh*>(draw->mesh->gpu_data());
-        if (!mesh) continue;
+            auto* mesh = static_cast<GpuMesh*>(draw.mesh->gpu_data());
+            if (!mesh) continue;
 
-        const vk::VulkanImage& albedo   = pick_tex(draw->material.albedo,       m_fallback_white);
-        const vk::VulkanImage& normal   = pick_tex(draw->material.normal_map,    m_fallback_normal);
-        const vk::VulkanImage& mr       = pick_tex(draw->material.mr_map,        m_fallback_mr);
-        const vk::VulkanImage& emissive = pick_tex(draw->material.emissive_tex,  m_fallback_black);
+            const vk::VulkanImage& albedo   = pick_tex(draw.material.albedo,       m_fallback_white);
+            const vk::VulkanImage& normal   = pick_tex(draw.material.normal_map,    m_fallback_normal);
+            const vk::VulkanImage& mr       = pick_tex(draw.material.mr_map,        m_fallback_mr);
+            const vk::VulkanImage& emissive = pick_tex(draw.material.emissive_tex,  m_fallback_black);
 
-        VkDescriptorSet mat_set = m_desc.alloc_material_set(
-            m_ctx.device(),
-            albedo.view, albedo.sampler,
-            normal.view, normal.sampler,
-            mr.view,     mr.sampler,
-            emissive.view, emissive.sampler);
+            VkDescriptorSet mat_set = m_desc.alloc_material_set(
+                m_ctx.device(),
+                albedo.view, albedo.sampler,
+                normal.view, normal.sampler,
+                mr.view,     mr.sampler,
+                emissive.view, emissive.sampler);
 
-        std::array<VkDescriptorSet, 2> sets = {frame_set, mat_set};
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pbr_layout, 0,
-                                (uint32_t)sets.size(), sets.data(), 0, nullptr);
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          draw->material.double_sided ? m_forward_pipe_double : m_forward_pipe);
+            std::array<VkDescriptorSet, 3> sets = {frame_set, mat_set, fwd_input_set};
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_fwd_plus_obj_layout, 0,
+                                    (uint32_t)sets.size(), sets.data(), 0, nullptr);
 
-        bool has_emissive_tex = draw->material.emissive_tex && draw->material.emissive_tex->valid();
-        PbrPush push{};
-        push.model      = draw->transform;
-        push.base_color = draw->material.base_color;
-        push.pbr = glm::vec4(draw->material.metallic, draw->material.roughness,
-                             draw->material.alpha_cutoff, 0.0f);
-        push.emissive = glm::vec4(draw->material.emissive, has_emissive_tex ? 1.0f : 0.0f);
-        push.flags = glm::vec4(
-            draw->material.lit ? 1.0f : 0.0f,
-            draw->material.albedo && draw->material.albedo->valid() ? 1.0f : 0.0f,
-            draw->material.normal_map && draw->material.normal_map->valid() ? 1.0f : 0.0f,
-            draw->material.mr_map && draw->material.mr_map->valid() ? 1.0f : 0.0f);
-        vkCmdPushConstants(cmd, m_pbr_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0, sizeof(push), &push);
+            VkPipeline pipe;
+            if (!blend) {
+                pipe = draw.material.double_sided ? m_fwd_opaque_pipe_double : m_fwd_opaque_pipe;
+            } else {
+                pipe = draw.material.double_sided ? m_fwd_blend_pipe_double : m_fwd_blend_pipe;
+            }
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
 
-        VkBuffer vb = mesh->vb.handle;
-        VkDeviceSize offs = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &offs);
-        vkCmdBindIndexBuffer(cmd, mesh->ib.handle, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(cmd, mesh->index_count, 1, 0, 0, 0);
-    }
+            bool has_emissive_tex = draw.material.emissive_tex && draw.material.emissive_tex->valid();
+            PbrPush push{};
+            push.model      = draw.transform;
+            push.base_color = draw.material.base_color;
+            push.pbr = glm::vec4(draw.material.metallic, draw.material.roughness,
+                                 draw.material.alpha_cutoff,
+                                 draw.material.alpha_mode == AlphaMode::Mask ? 1.0f :
+                                 draw.material.alpha_mode == AlphaMode::Blend ? 2.0f : 0.0f);
+            push.emissive = glm::vec4(draw.material.emissive, has_emissive_tex ? 1.0f : 0.0f);
+            push.flags = glm::vec4(
+                draw.material.lit ? 1.0f : 0.0f,
+                draw.material.albedo && draw.material.albedo->valid() ? 1.0f : 0.0f,
+                draw.material.normal_map && draw.material.normal_map->valid() ? 1.0f : 0.0f,
+                draw.material.mr_map && draw.material.mr_map->valid() ? 1.0f : 0.0f);
+            vkCmdPushConstants(cmd, m_fwd_plus_obj_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(push), &push);
+
+            VkBuffer vb = mesh->vb.handle;
+            VkDeviceSize offs = 0;
+            vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &offs);
+            vkCmdBindIndexBuffer(cmd, mesh->ib.handle, 0, VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexed(cmd, mesh->index_count, 1, 0, 0, 0);
+        }
+    };
+
+    // --- 2. Opaque + Mask draws ---
+    draw_meshes(false);
+
+    // --- 3. Blend draws (back-to-front) ---
+    draw_meshes(true);
 
     vkCmdEndRenderPass(cmd);
+    // After this pass: hdr_color is at SHADER_READ_ONLY_OPTIMAL (per finalLayout in m_fwd_plus_pass)
+}
+
+void VulkanRenderer::record_ssr_passes_(VkCommandBuffer cmd, VkDescriptorSet frame_set) {
+    const uint32_t w = m_swapchain.extent().width;
+    const uint32_t h = m_swapchain.extent().height;
+    const uint32_t history_write = m_ssr_temporal_idx % 2;
+    const uint32_t history_read  = 1u - history_write;
+
+    VkViewport vp = make_viewport(float(w), float(h));
+    VkRect2D sc = make_scissor(w, h);
+    VkClearValue clear{};
+    clear.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+
+    vk::transition_image_layout(cmd, m_ssr_raw.image, VK_IMAGE_ASPECT_COLOR_BIT,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+    VkDescriptorSet ray_set = m_desc.alloc_ssr_ray_set(
+        m_ctx.device(),
+        m_hdr_color.view,       m_hdr_color.sampler,
+        m_hdr_depth.view,       m_hdr_depth_sampler,
+        m_gbuf1.view,           m_gbuf1.sampler,
+        m_gbuf_roughness.view,  m_gbuf_roughness.sampler);
+
+    {
+        VkRenderPassBeginInfo rp{};
+        rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        rp.renderPass = m_ssr_pass;
+        rp.framebuffer = m_ssr_raw_fb;
+        rp.renderArea.extent = {w, h};
+        rp.clearValueCount = 1;
+        rp.pClearValues = &clear;
+
+        vkCmdBeginRenderPass(cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdSetViewport(cmd, 0, 1, &vp);
+        vkCmdSetScissor(cmd, 0, 1, &sc);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ssr_ray_pipe);
+
+        std::array<VkDescriptorSet, 2> sets = {ray_set, frame_set};
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ssr_ray_layout,
+            0, (uint32_t)sets.size(), sets.data(), 0, nullptr);
+
+        Vec4Push push{};
+        push.value = {
+            float(m_settings.ssr_steps),
+            m_settings.ssr_thickness,
+            m_settings.ssr_max_distance,
+            m_settings.ssr_roughness_cutoff
+        };
+        vkCmdPushConstants(cmd, m_ssr_ray_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
+        vkCmdDraw(cmd, 3, 1, 0, 0);
+        vkCmdEndRenderPass(cmd);
+    }
+
+    vk::transition_image_layout(cmd, m_ssr_history[history_write].image, VK_IMAGE_ASPECT_COLOR_BIT,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+    VkDescriptorSet temporal_set = m_desc.alloc_ssr_temporal_set(
+        m_ctx.device(),
+        m_ssr_raw.view,               m_ssr_raw.sampler,
+        m_ssr_history[history_read].view, m_ssr_history[history_read].sampler,
+        m_hdr_depth.view,             m_hdr_depth_sampler);
+
+    {
+        VkRenderPassBeginInfo rp{};
+        rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        rp.renderPass = m_ssr_pass;
+        rp.framebuffer = m_ssr_history_fbs[history_write];
+        rp.renderArea.extent = {w, h};
+        rp.clearValueCount = 1;
+        rp.pClearValues = &clear;
+
+        vkCmdBeginRenderPass(cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdSetViewport(cmd, 0, 1, &vp);
+        vkCmdSetScissor(cmd, 0, 1, &sc);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ssr_temporal_pipe);
+
+        std::array<VkDescriptorSet, 2> sets = {temporal_set, frame_set};
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ssr_temporal_layout,
+            0, (uint32_t)sets.size(), sets.data(), 0, nullptr);
+
+        Vec4Push push{};
+        push.value = {(m_ssr_temporal_idx == 0) ? 1.0f : m_settings.ssr_temporal_blend, 0.0f, 0.0f, 0.0f};
+        vkCmdPushConstants(cmd, m_ssr_temporal_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
+        vkCmdDraw(cmd, 3, 1, 0, 0);
+        vkCmdEndRenderPass(cmd);
+    }
+}
+
+VkSampleCountFlagBits VulkanRenderer::get_sample_count_() const {
+    switch (m_current_aa_mode) {
+        case AaMode::MSAA_2x: return VK_SAMPLE_COUNT_2_BIT;
+        case AaMode::MSAA_4x: return VK_SAMPLE_COUNT_4_BIT;
+        case AaMode::MSAA_8x: return VK_SAMPLE_COUNT_8_BIT;
+        default:               return VK_SAMPLE_COUNT_1_BIT;
+    }
+}
+
+void VulkanRenderer::rebuild_forward_() {
+    vkDeviceWaitIdle(m_ctx.device());
+    m_current_aa_mode = m_settings.aa_mode;
+
+    // Destroy AA-dependent pipelines
+    auto dpipe = [&](VkPipeline& p) { if (p) { vkDestroyPipeline(m_ctx.device(), p, nullptr); p = VK_NULL_HANDLE; } };
+    dpipe(m_sky_fwd_pipe);
+    dpipe(m_fwd_opaque_pipe);
+    dpipe(m_fwd_opaque_pipe_double);
+    dpipe(m_fwd_blend_pipe);
+    dpipe(m_fwd_blend_pipe_double);
+
+    // Destroy fwd_plus framebuffer and pass (depend on sample count)
+    if (m_fwd_plus_fb)   { vkDestroyFramebuffer(m_ctx.device(), m_fwd_plus_fb,   nullptr); m_fwd_plus_fb   = VK_NULL_HANDLE; }
+    if (m_fwd_plus_pass) { vkDestroyRenderPass(m_ctx.device(),  m_fwd_plus_pass,  nullptr); m_fwd_plus_pass  = VK_NULL_HANDLE; }
+
+    // Destroy MSAA buffers
+    m_msaa_color.destroy(m_ctx.device(), m_ctx.allocator());
+    m_fwd_depth.destroy(m_ctx.device(), m_ctx.allocator());
+
+    const auto extent = m_swapchain.extent();
+    auto sc = get_sample_count_();
+
+    // Recreate fwd_depth
+    m_fwd_depth = vk::create_attachment(m_ctx, extent.width, extent.height,
+        DEPTH_FORMAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        VK_IMAGE_ASPECT_DEPTH_BIT, false, sc);
+
+    // Recreate msaa_color if MSAA
+    if (sc != VK_SAMPLE_COUNT_1_BIT) {
+        m_msaa_color = vk::create_attachment(m_ctx, extent.width, extent.height,
+            HDR_FORMAT,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT, false, sc);
+    }
+
+    // Recreate m_fwd_plus_pass
+    if (sc == VK_SAMPLE_COUNT_1_BIT) {
+        const std::array<VkAttachmentDescription, 2> fwd_atts = {{
+            {0, HDR_FORMAT, VK_SAMPLE_COUNT_1_BIT,
+             VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE,
+             VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+            {0, DEPTH_FORMAT, VK_SAMPLE_COUNT_1_BIT,
+             VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+             VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+             VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL},
+        }};
+        VkAttachmentReference fwd_color{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        VkAttachmentReference fwd_depth{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+        VkSubpassDescription subpass{};
+        subpass.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpass.colorAttachmentCount    = 1;
+        subpass.pColorAttachments       = &fwd_color;
+        subpass.pDepthStencilAttachment = &fwd_depth;
+        std::array<VkSubpassDependency, 2> deps{};
+        deps[0] = {VK_SUBPASS_EXTERNAL, 0,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+            VK_ACCESS_SHADER_READ_BIT,
+            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, 0};
+        deps[1] = {0, VK_SUBPASS_EXTERNAL,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            VK_ACCESS_SHADER_READ_BIT, 0};
+        VkRenderPassCreateInfo ci{};
+        ci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        ci.attachmentCount = (uint32_t)fwd_atts.size();
+        ci.pAttachments    = fwd_atts.data();
+        ci.subpassCount    = 1; ci.pSubpasses = &subpass;
+        ci.dependencyCount = (uint32_t)deps.size(); ci.pDependencies = deps.data();
+        VK_CHECK(vkCreateRenderPass(m_ctx.device(), &ci, nullptr, &m_fwd_plus_pass));
+        m_fwd_plus_fb = make_framebuffer(m_ctx.device(), m_fwd_plus_pass,
+            {m_hdr_color.view, m_fwd_depth.view}, extent.width, extent.height);
+    } else {
+        const std::array<VkAttachmentDescription, 3> msaa_atts = {{
+            {0, HDR_FORMAT, sc,
+             VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+             VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+             VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+            {0, DEPTH_FORMAT, sc,
+             VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+             VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+             VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL},
+            {0, HDR_FORMAT, VK_SAMPLE_COUNT_1_BIT,
+             VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_STORE,
+             VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+        }};
+        VkAttachmentReference msaa_color{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        VkAttachmentReference msaa_depth{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+        VkAttachmentReference msaa_resolve{2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        VkSubpassDescription subpass{};
+        subpass.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpass.colorAttachmentCount    = 1;
+        subpass.pColorAttachments       = &msaa_color;
+        subpass.pResolveAttachments     = &msaa_resolve;
+        subpass.pDepthStencilAttachment = &msaa_depth;
+        std::array<VkSubpassDependency, 2> deps{};
+        deps[0] = {VK_SUBPASS_EXTERNAL, 0,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+            VK_ACCESS_SHADER_READ_BIT,
+            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, 0};
+        deps[1] = {0, VK_SUBPASS_EXTERNAL,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            VK_ACCESS_SHADER_READ_BIT, 0};
+        VkRenderPassCreateInfo ci{};
+        ci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        ci.attachmentCount = (uint32_t)msaa_atts.size();
+        ci.pAttachments    = msaa_atts.data();
+        ci.subpassCount    = 1; ci.pSubpasses = &subpass;
+        ci.dependencyCount = (uint32_t)deps.size(); ci.pDependencies = deps.data();
+        VK_CHECK(vkCreateRenderPass(m_ctx.device(), &ci, nullptr, &m_fwd_plus_pass));
+        m_fwd_plus_fb = make_framebuffer(m_ctx.device(), m_fwd_plus_pass,
+            {m_msaa_color.view, m_fwd_depth.view, m_hdr_color.view}, extent.width, extent.height);
+    }
+
+    // Recreate fwd+ pipelines with new sample count
+    {
+        vk::PipelineDesc desc{};
+        desc.vert_code   = fullscreen_vert_glsl;
+        desc.vert_size   = sizeof(fullscreen_vert_glsl);
+        desc.frag_code   = sky_frag_glsl;
+        desc.frag_size   = sizeof(sky_frag_glsl);
+        desc.layout      = m_sky_fwd_layout;
+        desc.render_pass = m_fwd_plus_pass;
+        desc.depth_test  = false;
+        desc.depth_write = false;
+        desc.cull_mode   = VK_CULL_MODE_NONE;
+        desc.sample_count = sc;
+        m_sky_fwd_pipe = vk::build_pipeline(m_ctx.device(), desc);
+    }
+    std::vector<VkVertexInputBindingDescription> bindings = vertex_bindings();
+    std::vector<VkVertexInputAttributeDescription> attribs = vertex_attribs();
+    {
+        vk::PipelineDesc desc{};
+        desc.vert_code   = forward_plus_vert_glsl;
+        desc.vert_size   = sizeof(forward_plus_vert_glsl);
+        desc.frag_code   = forward_plus_frag_glsl;
+        desc.frag_size   = sizeof(forward_plus_frag_glsl);
+        desc.vertex_bindings = bindings;
+        desc.vertex_attribs  = attribs;
+        desc.layout      = m_fwd_plus_obj_layout;
+        desc.render_pass = m_fwd_plus_pass;
+        desc.blend_enable = false;
+        desc.depth_test   = true;
+        desc.depth_write  = true;
+        desc.sample_count = sc;
+        m_fwd_opaque_pipe = vk::build_pipeline(m_ctx.device(), desc);
+        desc.cull_mode = VK_CULL_MODE_NONE;
+        m_fwd_opaque_pipe_double = vk::build_pipeline(m_ctx.device(), desc);
+    }
+    {
+        vk::PipelineDesc desc{};
+        desc.vert_code   = forward_plus_vert_glsl;
+        desc.vert_size   = sizeof(forward_plus_vert_glsl);
+        desc.frag_code   = forward_plus_frag_glsl;
+        desc.frag_size   = sizeof(forward_plus_frag_glsl);
+        desc.vertex_bindings = bindings;
+        desc.vertex_attribs  = attribs;
+        desc.layout      = m_fwd_plus_obj_layout;
+        desc.render_pass = m_fwd_plus_pass;
+        desc.blend_enable = true;
+        desc.depth_test   = true;
+        desc.depth_write  = false;
+        desc.sample_count = sc;
+        m_fwd_blend_pipe = vk::build_pipeline(m_ctx.device(), desc);
+        desc.cull_mode = VK_CULL_MODE_NONE;
+        m_fwd_blend_pipe_double = vk::build_pipeline(m_ctx.device(), desc);
+    }
 }
 
 void VulkanRenderer::record_taa_pass_(VkCommandBuffer cmd, VkDescriptorSet frame_set,
@@ -2111,7 +2581,7 @@ void VulkanRenderer::record_taa_pass_(VkCommandBuffer cmd, VkDescriptorSet frame
     TaaPush push{};
     push.params     = glm::vec4(
         m_settings.taa_blend,
-        m_settings.taa_enabled ? 1.0f : 0.0f,
+        (m_settings.aa_mode == AaMode::TAA) ? 1.0f : 0.0f,
         m_settings.taa_variance_gamma,
         m_settings.taa_sharpening);
     push.resolution = glm::vec4(float(w), float(h), 1.0f / float(w), 1.0f / float(h));
@@ -2163,7 +2633,7 @@ void VulkanRenderer::record_bloom_passes_(VkCommandBuffer cmd, const vk::VulkanI
     run_pass(m_bloom_a_fb, m_bloom_b, m_blur_pipe, m_blur_layout, {0.0f, 1.0f / float(h), 0.0f, 0.0f});
 }
 
-void VulkanRenderer::record_tonemap_pass_(VkCommandBuffer cmd, uint32_t image_idx, const vk::VulkanImage& hdr_src) {
+void VulkanRenderer::record_tonemap_pass_(VkCommandBuffer cmd, uint32_t image_idx, const vk::VulkanImage& hdr_src, const vk::VulkanImage& ssr_src) {
     VkClearValue clear{};
     clear.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
 
@@ -2178,7 +2648,8 @@ void VulkanRenderer::record_tonemap_pass_(VkCommandBuffer cmd, uint32_t image_id
     VkDescriptorSet set = m_desc.alloc_post_set(
         m_ctx.device(),
         hdr_src.view, hdr_src.sampler,
-        m_bloom_a.view, m_bloom_a.sampler);
+        m_bloom_a.view, m_bloom_a.sampler,
+        ssr_src.view, ssr_src.sampler);
 
     vkCmdBeginRenderPass(cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
     VkViewport vp = make_viewport(float(m_swapchain.extent().width), float(m_swapchain.extent().height));
@@ -2189,7 +2660,8 @@ void VulkanRenderer::record_tonemap_pass_(VkCommandBuffer cmd, uint32_t image_id
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tonemap_layout, 0, 1, &set, 0, nullptr);
     Vec4Push push{};
     float bloom_blend = m_settings.bloom_enabled ? m_settings.bloom_intensity : 0.0f;
-    push.value = {m_settings.exposure, bloom_blend, float(m_settings.tonemap_mode), 0.0f};
+    float ssr_blend = m_settings.ssr_enabled ? m_settings.ssr_intensity : 0.0f;
+    push.value = {m_settings.exposure, bloom_blend, float(m_settings.tonemap_mode), ssr_blend};
     vkCmdPushConstants(cmd, m_tonemap_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
     vkCmdDraw(cmd, 3, 1, 0, 0);
     vkCmdEndRenderPass(cmd);
@@ -2400,6 +2872,11 @@ bool VulkanRenderer::create_ibl_pipelines_() {
               sizeof(IBLSkyPush), m_ibl_sky_rp, false,
               m_ibl_sky_layout, m_ibl_sky_pipe);
 
+    // Equirect-to-cube: set 0 = 2D equirect texture, push = face index
+    make_pipe(equirect_to_cube_frag_glsl, sizeof(equirect_to_cube_frag_glsl),
+              sizeof(EquirectPush), m_ibl_sky_rp, true,
+              m_equirect_layout, m_equirect_pipe);
+
     make_pipe(ibl_irradiance_frag_glsl, sizeof(ibl_irradiance_frag_glsl),
               sizeof(IBLCubePush), m_ibl_irr_rp, true,
               m_ibl_irr_layout, m_ibl_irr_pipe);
@@ -2435,39 +2912,76 @@ void VulkanRenderer::rebuild_ibl_() {
             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     }
 
-    // ── Render sky per face ────────────────────────────────────────────────
-    for (int f = 0; f < 6; ++f) {
-        VkFramebufferCreateInfo fci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
-        fci.renderPass = m_ibl_sky_rp;
-        fci.attachmentCount = 1;
-        fci.pAttachments = &m_ibl_sky_face_views[f];
-        fci.width = SKY_SIZE; fci.height = SKY_SIZE; fci.layers = 1;
-        VkFramebuffer fb; vkCreateFramebuffer(dev, &fci, nullptr, &fb);
-        temp_fbs.push_back(fb);
+    // ── Render sky per face (HDR equirect or procedural) ──────────────────
+    if (m_has_hdr_sky && m_hdr_equirect.valid()) {
+        // Equirect-to-cube pass
+        VkDescriptorSet eq_set = m_desc.alloc_single_sampler_set(
+            dev, m_hdr_equirect.view, m_hdr_equirect.sampler);
 
-        VkClearValue cv{}; cv.color = {{0,0,0,1}};
-        VkRenderPassBeginInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-        rp.renderPass = m_ibl_sky_rp; rp.framebuffer = fb;
-        rp.renderArea.extent = {SKY_SIZE, SKY_SIZE};
-        rp.clearValueCount = 1; rp.pClearValues = &cv;
-        vkCmdBeginRenderPass(cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
+        for (int f = 0; f < 6; ++f) {
+            VkFramebufferCreateInfo fci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+            fci.renderPass = m_ibl_sky_rp;
+            fci.attachmentCount = 1;
+            fci.pAttachments = &m_ibl_sky_face_views[f];
+            fci.width = SKY_SIZE; fci.height = SKY_SIZE; fci.layers = 1;
+            VkFramebuffer fb; vkCreateFramebuffer(dev, &fci, nullptr, &fb);
+            temp_fbs.push_back(fb);
 
-        VkViewport vp = make_viewport(float(SKY_SIZE), float(SKY_SIZE));
-        VkRect2D sc   = make_scissor(SKY_SIZE, SKY_SIZE);
-        vkCmdSetViewport(cmd, 0, 1, &vp);
-        vkCmdSetScissor(cmd,  0, 1, &sc);
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ibl_sky_pipe);
+            VkClearValue cv{}; cv.color = {{0,0,0,1}};
+            VkRenderPassBeginInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+            rp.renderPass = m_ibl_sky_rp; rp.framebuffer = fb;
+            rp.renderArea.extent = {SKY_SIZE, SKY_SIZE};
+            rp.clearValueCount = 1; rp.pClearValues = &cv;
+            vkCmdBeginRenderPass(cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
 
-        IBLSkyPush push{};
-        push.sun_dir   = glm::vec4(m_sky_sun_dir, 0.0f);
-        push.zenith    = glm::vec4(m_sky_zenith, 0.0f);
-        push.horizon   = glm::vec4(m_sky_horizon, 0.0f);
-        push.sun_color = glm::vec4(m_sky_sun_color, m_sky_sun_cos_r);
-        push.face      = f;
-        vkCmdPushConstants(cmd, m_ibl_sky_layout, VK_SHADER_STAGE_FRAGMENT_BIT,
-            0, sizeof(push), &push);
-        vkCmdDraw(cmd, 3, 1, 0, 0);
-        vkCmdEndRenderPass(cmd);
+            VkViewport vp = make_viewport(float(SKY_SIZE), float(SKY_SIZE));
+            VkRect2D sc   = make_scissor(SKY_SIZE, SKY_SIZE);
+            vkCmdSetViewport(cmd, 0, 1, &vp);
+            vkCmdSetScissor(cmd,  0, 1, &sc);
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_equirect_pipe);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                m_equirect_layout, 0, 1, &eq_set, 0, nullptr);
+
+            EquirectPush push{}; push.face = f;
+            vkCmdPushConstants(cmd, m_equirect_layout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                0, sizeof(push), &push);
+            vkCmdDraw(cmd, 3, 1, 0, 0);
+            vkCmdEndRenderPass(cmd);
+        }
+    } else {
+        for (int f = 0; f < 6; ++f) {
+            VkFramebufferCreateInfo fci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+            fci.renderPass = m_ibl_sky_rp;
+            fci.attachmentCount = 1;
+            fci.pAttachments = &m_ibl_sky_face_views[f];
+            fci.width = SKY_SIZE; fci.height = SKY_SIZE; fci.layers = 1;
+            VkFramebuffer fb; vkCreateFramebuffer(dev, &fci, nullptr, &fb);
+            temp_fbs.push_back(fb);
+
+            VkClearValue cv{}; cv.color = {{0,0,0,1}};
+            VkRenderPassBeginInfo rp{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+            rp.renderPass = m_ibl_sky_rp; rp.framebuffer = fb;
+            rp.renderArea.extent = {SKY_SIZE, SKY_SIZE};
+            rp.clearValueCount = 1; rp.pClearValues = &cv;
+            vkCmdBeginRenderPass(cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
+
+            VkViewport vp = make_viewport(float(SKY_SIZE), float(SKY_SIZE));
+            VkRect2D sc   = make_scissor(SKY_SIZE, SKY_SIZE);
+            vkCmdSetViewport(cmd, 0, 1, &vp);
+            vkCmdSetScissor(cmd,  0, 1, &sc);
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ibl_sky_pipe);
+
+            IBLSkyPush push{};
+            push.sun_dir   = glm::vec4(m_sky_sun_dir, 0.0f);
+            push.zenith    = glm::vec4(m_sky_zenith, 0.0f);
+            push.horizon   = glm::vec4(m_sky_horizon, 0.0f);
+            push.sun_color = glm::vec4(m_sky_sun_color, m_sky_sun_cos_r);
+            push.face      = f;
+            vkCmdPushConstants(cmd, m_ibl_sky_layout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                0, sizeof(push), &push);
+            vkCmdDraw(cmd, 3, 1, 0, 0);
+            vkCmdEndRenderPass(cmd);
+        }
     }
     // Transition sky to SHADER_READ_ONLY for irradiance/prefilter input
     vk::transition_cubemap_layout(cmd, m_ibl_sky.image,
@@ -2674,17 +3188,65 @@ void VulkanRenderer::destroy_ibl_() {
     if (m_ibl_pref_rp) { vkDestroyRenderPass(dev, m_ibl_pref_rp, nullptr); m_ibl_pref_rp = VK_NULL_HANDLE; }
     if (m_ibl_lut_rp)  { vkDestroyRenderPass(dev, m_ibl_lut_rp,  nullptr); m_ibl_lut_rp  = VK_NULL_HANDLE; }
 
-    if (m_ibl_sky_pipe)  { vkDestroyPipeline(dev, m_ibl_sky_pipe,  nullptr); m_ibl_sky_pipe  = VK_NULL_HANDLE; }
-    if (m_ibl_irr_pipe)  { vkDestroyPipeline(dev, m_ibl_irr_pipe,  nullptr); m_ibl_irr_pipe  = VK_NULL_HANDLE; }
-    if (m_ibl_pref_pipe) { vkDestroyPipeline(dev, m_ibl_pref_pipe, nullptr); m_ibl_pref_pipe = VK_NULL_HANDLE; }
-    if (m_ibl_lut_pipe)  { vkDestroyPipeline(dev, m_ibl_lut_pipe,  nullptr); m_ibl_lut_pipe  = VK_NULL_HANDLE; }
+    if (m_ibl_sky_pipe)      { vkDestroyPipeline(dev, m_ibl_sky_pipe,      nullptr); m_ibl_sky_pipe      = VK_NULL_HANDLE; }
+    if (m_ibl_irr_pipe)      { vkDestroyPipeline(dev, m_ibl_irr_pipe,      nullptr); m_ibl_irr_pipe      = VK_NULL_HANDLE; }
+    if (m_ibl_pref_pipe)     { vkDestroyPipeline(dev, m_ibl_pref_pipe,     nullptr); m_ibl_pref_pipe     = VK_NULL_HANDLE; }
+    if (m_ibl_lut_pipe)      { vkDestroyPipeline(dev, m_ibl_lut_pipe,      nullptr); m_ibl_lut_pipe      = VK_NULL_HANDLE; }
+    if (m_equirect_pipe)     { vkDestroyPipeline(dev, m_equirect_pipe,     nullptr); m_equirect_pipe     = VK_NULL_HANDLE; }
 
-    if (m_ibl_sky_layout)  { vkDestroyPipelineLayout(dev, m_ibl_sky_layout,  nullptr); m_ibl_sky_layout  = VK_NULL_HANDLE; }
-    if (m_ibl_irr_layout)  { vkDestroyPipelineLayout(dev, m_ibl_irr_layout,  nullptr); m_ibl_irr_layout  = VK_NULL_HANDLE; }
-    if (m_ibl_pref_layout) { vkDestroyPipelineLayout(dev, m_ibl_pref_layout, nullptr); m_ibl_pref_layout = VK_NULL_HANDLE; }
-    if (m_ibl_lut_layout)  { vkDestroyPipelineLayout(dev, m_ibl_lut_layout,  nullptr); m_ibl_lut_layout  = VK_NULL_HANDLE; }
+    if (m_ibl_sky_layout)    { vkDestroyPipelineLayout(dev, m_ibl_sky_layout,    nullptr); m_ibl_sky_layout    = VK_NULL_HANDLE; }
+    if (m_ibl_irr_layout)    { vkDestroyPipelineLayout(dev, m_ibl_irr_layout,    nullptr); m_ibl_irr_layout    = VK_NULL_HANDLE; }
+    if (m_ibl_pref_layout)   { vkDestroyPipelineLayout(dev, m_ibl_pref_layout,   nullptr); m_ibl_pref_layout   = VK_NULL_HANDLE; }
+    if (m_ibl_lut_layout)    { vkDestroyPipelineLayout(dev, m_ibl_lut_layout,    nullptr); m_ibl_lut_layout    = VK_NULL_HANDLE; }
+    if (m_equirect_layout)   { vkDestroyPipelineLayout(dev, m_equirect_layout,   nullptr); m_equirect_layout   = VK_NULL_HANDLE; }
+
+    m_hdr_equirect.destroy(dev, m_ctx.allocator());
+    m_has_hdr_sky = false;
+    m_hdr_sky_path_loaded.clear();
 
     m_ibl_ready = false;
 }
+
+void VulkanRenderer::set_hdr_sky(const std::string& path) {
+    if (path.empty()) {
+        m_has_hdr_sky = false;
+        if (m_hdr_equirect.valid())
+            m_hdr_equirect.destroy(m_ctx.device(), m_ctx.allocator());
+        m_ibl_dirty = true;
+        return;
+    }
+
+    if (path == m_hdr_sky_path_loaded && m_has_hdr_sky) return;
+    m_hdr_sky_path_loaded = path;
+
+    int w, h, comp;
+    float* raw = stbi_loadf(path.c_str(), &w, &h, &comp, 3);
+    if (!raw) {
+        SOL_WARN("set_hdr_sky: failed to load '" + path + "': " + stbi_failure_reason());
+        return;
+    }
+
+    // Expand RGB32F → RGBA32F
+    std::vector<float> rgba(w * h * 4);
+    for (int i = 0; i < w * h; ++i) {
+        rgba[i*4+0] = raw[i*3+0];
+        rgba[i*4+1] = raw[i*3+1];
+        rgba[i*4+2] = raw[i*3+2];
+        rgba[i*4+3] = 1.0f;
+    }
+    stbi_image_free(raw);
+
+    if (m_hdr_equirect.valid())
+        m_hdr_equirect.destroy(m_ctx.device(), m_ctx.allocator());
+
+    m_hdr_equirect = vk::create_texture2d_hdr(m_ctx, rgba.data(), w, h);
+    m_has_hdr_sky  = m_hdr_equirect.valid();
+    m_ibl_dirty    = true;
+
+    SOL_INFO("VulkanRenderer: loaded HDR sky '" + path + "' (" +
+             std::to_string(w) + "x" + std::to_string(h) + ")");
+}
+
+int VulkanRenderer::draw_call_count() const { return static_cast<int>(m_draws.size()); }
 
 } // namespace sol

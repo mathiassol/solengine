@@ -3,11 +3,14 @@
 #include <QString>
 #include <QPoint>
 #include <QTimer>
+#include <functional>
+#include <memory>
 #include <chrono>
 #include <glm/glm.hpp>
 
 namespace sol { class EngineHost; }
 namespace sol { class Node; }
+class EditorUI;
 class QFocusEvent;
 class QKeyEvent;
 class QMouseEvent;
@@ -34,6 +37,7 @@ public:
 
 signals:
     void nodeSelected(sol::Node* node);
+    void gizmoOpChanged(int op);
 
 protected:
     void showEvent(QShowEvent* event) override;
@@ -64,12 +68,18 @@ private:
     QPoint    m_fly_last_mouse {};
     bool      m_key_w = false, m_key_a = false, m_key_s = false, m_key_d = false;
     bool      m_key_q = false, m_key_e = false;
+    bool      m_key_up = false, m_key_down = false;
+    bool      m_key_left = false, m_key_right = false;
     glm::vec3 m_editor_cam_pos {0.0f, 5.0f, 15.0f};
     float     m_editor_cam_yaw = 0.0f;
     float     m_editor_cam_pitch = -15.0f;
     float     m_fly_speed = 10.0f;
     float     m_mouse_sens = 0.2f;
     int       m_gizmo_op = 0;
+    std::unique_ptr<EditorUI> m_editor_ui;
+
+    std::function<void()>            m_begin_move_fn;
+    std::function<void(Qt::Edges)>   m_begin_resize_fn;
 
     std::chrono::steady_clock::time_point m_last_tick;
 };

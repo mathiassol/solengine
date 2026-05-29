@@ -1,0 +1,76 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 20, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "windows-debug",
+      "displayName": "Windows Debug",
+      "description": "Debug build — full symbols, no optimisation",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/debug",
+      "installDir": "${sourceDir}/install",
+      "toolchainFile": "",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "SOL_BUILD_DEMOS": "ON",
+        "SOL_MONOLITHIC": "OFF"
+      },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "windows-release",
+      "displayName": "Windows Release",
+      "description": "Optimised Release build",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/release",
+      "installDir": "${sourceDir}/install",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "SOL_BUILD_DEMOS": "ON",
+        "SOL_MONOLITHIC": "OFF"
+      },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "windows-relwithdebinfo",
+      "displayName": "Windows RelWithDebInfo",
+      "description": "Optimised build with debug symbols — best for profiling",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/relwithdebinfo",
+      "installDir": "${sourceDir}/install",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "SOL_BUILD_DEMOS": "ON",
+        "SOL_MONOLITHIC": "OFF"
+      },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "debug-build",
+      "displayName": "Build Debug",
+      "configurePreset": "windows-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "release-build",
+      "displayName": "Build Release",
+      "configurePreset": "windows-release",
+      "configuration": "Release"
+    },
+    {
+      "name": "relwithdebinfo-build",
+      "displayName": "Build RelWithDebInfo",
+      "configurePreset": "windows-relwithdebinfo",
+      "configuration": "RelWithDebInfo"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "debug-test",
+      "displayName": "Test Debug",
+      "configurePreset": "windows-debug"
+    }
+  ]
+}

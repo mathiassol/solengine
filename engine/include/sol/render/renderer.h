@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <string>
 #include <vector>
 #include <glm/glm.hpp>
 
@@ -68,6 +69,15 @@ public:
         m_sky_sun_cos_r = sun_cos_radius;
         m_has_sky       = true;
     }
+
+    // Set the HDR environment map for sky background and IBL source.
+    // path is relative to the working directory. Empty string disables HDR sky.
+    virtual void set_hdr_sky(const std::string& /*path*/) {}
+    virtual int draw_call_count() const { return 0; }
+
+    // Block until all in-flight GPU work is complete.
+    // Call before destroying GPU resources (e.g. on scene swap) to prevent hazards.
+    virtual void wait_idle() {}
 
     uint16_t      width ()  const { return m_w; }
     uint16_t      height()  const { return m_h; }
