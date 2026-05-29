@@ -21,6 +21,8 @@
 	--sl-border-radius:        0;
 	--sl-border-radius-sm:     0;
 	--sl-border-radius-lg:     0;
+	/* match our nav height so Starlight's sticky offset is correct */
+	--sl-nav-height:           52px;
 }
 
 [data-theme='light'] {
@@ -44,14 +46,14 @@
 	--sl-border-radius:        0;
 	--sl-border-radius-sm:     0;
 	--sl-border-radius-lg:     0;
+	--sl-nav-height:           52px;
 }
 
 /* Hard-cut everything */
 * { border-radius: 0 !important; }
 
-/* Sidebar top border */
-.sidebar-pane { border-right: 1px solid #262626; }
-[data-theme='light'] .sidebar-pane { border-right: 1px solid #d0d0cc; }
+/* Sidebar left border */
+.sidebar-pane { border-right: 1px solid var(--sl-color-hairline); }
 
 /* ── Right TOC: compact, doesn't eat into content width ── */
 .right-sidebar {
@@ -78,4 +80,9 @@ starlight-toc a {
 /* Don't show nested h3/h4 links — keep TOC flat */
 starlight-toc li li {
 	display: none;
+}
+
+/* ── Starlight font match ── */
+:root {
+	--sl-font: system-ui, -apple-system, 'Segoe UI', sans-serif;
 }

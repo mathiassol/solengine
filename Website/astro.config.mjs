@@ -14,6 +14,9 @@ export default defineConfig({
 		starlight({
 			title: 'SolEngine',
 			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/mathiassol/solengine' }],
+			components: {
+				Header: './src/components/StarlightHeader.astro',
+			},
 			sidebar: [
 				{
 					label: 'Getting Started',
