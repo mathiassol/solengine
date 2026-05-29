@@ -3,16 +3,17 @@ import BaseLayout from '../layouts/BaseLayout.astro';
 ---
 
 <BaseLayout
-	title="SolEngine — Fast. Minimal. Powerful."
-	description="A high-performance engine for modern applications."
+	title="SolEngine"
+	description="C++20 Vulkan game engine with Qt6 editor and Lua scripting."
 >
 	<section class="hero">
 		<div class="wrap">
-			<p class="eyebrow">C++20 / VULKAN / LUA</p>
-			<h1>A game engine<br />you can own.</h1>
-			<p class="sub">SolEngine is a Vulkan-based game engine with a full Qt6 editor, Lua scripting, PBR rendering, and a clean node-tree scene system.</p>
+			<p class="eyebrow">C++20 · VULKAN · LUA</p>
+			<h1>SolEngine</h1>
+			<p class="sub">Vulkan PBR renderer. Qt6 + ImGui editor. Lua scripting. Node-tree scene system. Build from source on Windows.</p>
 			<div class="actions">
-				<a href="/docs/" class="btn-primary">Documentation</a>
+				<a href="/docs/" class="btn-primary">Docs</a>
+				<a href="/docs/getting-started" class="btn-ghost">Getting Started</a>
 				<a href="https://github.com/mathiassol/solengine" class="btn-ghost">GitHub &rarr;</a>
 			</div>
 		</div>
@@ -20,42 +21,31 @@ import BaseLayout from '../layouts/BaseLayout.astro';
 
 	<section class="features">
 		<div class="wrap">
-			<p class="eyebrow">FEATURES</p>
 			<div class="grid">
 				<div class="cell">
-					<h3>Vulkan PBR Renderer</h3>
-					<p>Cook-Torrance BRDF, IBL, CSM shadows, SSAO, SSR, TAA, bloom, volumetric fog — all in one pipeline.</p>
+					<h3>Renderer</h3>
+					<p>Vulkan. PBR (Cook-Torrance), IBL, cascaded shadow maps, SSAO, SSR, TAA, Kawase bloom, volumetric fog.</p>
 				</div>
 				<div class="cell">
-					<h3>Qt6 + ImGui Editor</h3>
-					<p>Scene hierarchy, inspector, material editor, script editor, asset browser, world settings — fully integrated.</p>
+					<h3>Editor</h3>
+					<p>Qt6 + ImGui. Scene hierarchy, node inspector, material editor with live preview sphere, script editor, asset browser.</p>
 				</div>
 				<div class="cell">
 					<h3>Lua Scripting</h3>
-					<p>Attach scripts to any node. Full access to physics raycasts, node instantiation, input, audio, and collision callbacks.</p>
+					<p>Lifecycle hooks on any node. Physics raycasts, collision and Area3D callbacks, node spawn/destroy, input, audio.</p>
 				</div>
 				<div class="cell">
-					<h3>17 Node Types</h3>
-					<p>MeshNode, ModelNode, lights, rigid/character/static bodies, Area3D, audio players, script nodes, and more.</p>
+					<h3>Scene System</h3>
+					<p>17 node types: meshes, lights, rigid/character/static bodies, Area3D, audio players, script nodes. JSON .solscene format.</p>
 				</div>
 				<div class="cell">
-					<h3>Physics & Audio</h3>
-					<p>Jolt Physics for rigid bodies, character controllers, and raycasts. miniaudio for 3D positional sound.</p>
+					<h3>Physics</h3>
+					<p>Jolt Physics. Rigid bodies, character controllers, static bodies, collision shapes, raycasts, overlap queries.</p>
 				</div>
 				<div class="cell">
-					<h3>Open & Hackable</h3>
-					<p>MIT licensed, CMake-based, no magic. The engine is a DLL — swap, extend, or replace any subsystem.</p>
+					<h3>Audio</h3>
+					<p>miniaudio. 3D positional playback, OGG/WAV/MP3, volume/loop controls, one-shot API from Lua.</p>
 				</div>
-			</div>
-		</div>
-	</section>
-
-	<section class="cta">
-		<div class="wrap">
-			<h2>Get started.</h2>
-			<div class="actions">
-				<a href="/docs/getting-started" class="btn-primary">Documentation</a>
-				<a href="https://github.com/mathiassol/solengine" class="btn-ghost">GitHub &rarr;</a>
 			</div>
 		</div>
 	</section>
@@ -91,7 +81,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
 	.btn-ghost:hover { color: var(--text); border-color: var(--muted); }
 
 	/* Features */
-	.features { padding: 5rem 0; border-bottom: 1px solid var(--border); }
+	.features { padding: 4rem 0; }
 	.grid {
 		display: grid; grid-template-columns: 1fr 1fr;
 		border-top: 1px solid var(--border);
@@ -105,8 +95,4 @@ import BaseLayout from '../layouts/BaseLayout.astro';
 	.cell h3 { font-size: 0.85rem; font-weight: 600; letter-spacing: 0.04em; margin-bottom: 0.75rem; }
 	.cell p { font-size: 0.85rem; color: var(--muted); line-height: 1.7; }
 	@media (max-width: 560px) { .grid { grid-template-columns: 1fr; } }
-
-	/* CTA */
-	.cta { padding: 5rem 0; }
-	.cta h2 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 2rem; }
 </style>

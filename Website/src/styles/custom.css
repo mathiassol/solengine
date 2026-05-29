@@ -23,8 +23,59 @@
 	--sl-border-radius-lg:     0;
 }
 
+[data-theme='light'] {
+	--sl-color-bg:             #f6f6f4;
+	--sl-color-bg-nav:         #f6f6f4;
+	--sl-color-bg-sidebar:     #f0f0ee;
+	--sl-color-bg-inline-code: #e8e8e5;
+	--sl-color-hairline:       #d0d0cc;
+	--sl-color-hairline-light: #e0e0dc;
+	--sl-color-text:           #1a1a18;
+	--sl-color-text-accent:    #8a6010;
+	--sl-color-gray-1:         #1a1a18;
+	--sl-color-gray-2:         #444440;
+	--sl-color-gray-3:         #888880;
+	--sl-color-gray-4:         #b8b8b0;
+	--sl-color-gray-5:         #d8d8d0;
+	--sl-color-gray-6:         #eeeeea;
+	--sl-color-accent-low:     #f0e0b0;
+	--sl-color-accent:         #8a6010;
+	--sl-color-accent-high:    #3a2000;
+	--sl-border-radius:        0;
+	--sl-border-radius-sm:     0;
+	--sl-border-radius-lg:     0;
+}
+
 /* Hard-cut everything */
 * { border-radius: 0 !important; }
 
 /* Sidebar top border */
 .sidebar-pane { border-right: 1px solid #262626; }
+[data-theme='light'] .sidebar-pane { border-right: 1px solid #d0d0cc; }
+
+/* ── Right TOC: compact, doesn't eat into content width ── */
+.right-sidebar {
+	width: 11rem !important;
+	min-width: 0 !important;
+}
+.right-sidebar-panel {
+	padding-inline: 0.75rem !important;
+}
+/* TOC heading ("On this page") */
+.right-sidebar-panel summary,
+.right-sidebar-panel > :first-child {
+	font-size: 0.65rem !important;
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	padding-block: 0.5rem;
+}
+/* TOC links */
+starlight-toc a {
+	font-size: 0.72rem !important;
+	padding-block: 0.15em !important;
+	line-height: 1.4;
+}
+/* Don't show nested h3/h4 links — keep TOC flat */
+starlight-toc li li {
+	display: none;
+}
