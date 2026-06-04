@@ -1,5 +1,6 @@
 #pragma once
 #include "sol/export.h"
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -50,6 +51,9 @@ public:
     int  add_timer(float duration, int cb_ref, bool repeating);
     void cancel_timer(int id);
 
+    // Called by background HTTP threads to queue a completed response
+    void push_http_result(bool ok, int status, std::string body, std::string error, int callback_ref);
+
     // Node pool helpers (used by Lua create_node / add_node)
     void track_pending_node(std::unique_ptr<Node> node);
     std::unique_ptr<Node> take_pending_node(Node* raw);
@@ -80,6 +84,17 @@ private:
 
     // Pending node pool (owned before parenting via add_node)
     std::unordered_map<Node*, std::unique_ptr<Node>> m_pending_nodes;
+
+    // HTTP callback queue — results pushed by background threads, dispatched on main thread
+    struct PendingHttpCallback {
+        bool        ok     = false;
+        int         status = 0;
+        std::string body;
+        std::string error;
+        int         callback_ref = -1;
+    };
+    std::mutex                       m_http_mutex;
+    std::vector<PendingHttpCallback> m_http_pending;
 
     void register_bindings();
     bool load_script_table(const std::string& path, int& out_ref);

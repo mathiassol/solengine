@@ -2,6 +2,8 @@
 
 A C++20 / Vulkan game engine with a Qt6 + ImGui editor and Lua scripting.
 
+**Website:** [solengine.mathiassol.dev](https://solengine.mathiassol.dev)
+
 | Concern       | Library / Technology |
 |---------------|----------------------|
 | Rendering     | Vulkan (custom PBR renderer) |
@@ -160,5 +162,5 @@ return node
 
 ## Documentation
 
-Full documentation at **[solengine.dev](https://solengine.mathiassol.com)** (or see `Website/`).
+Full documentation at **[solengine.dev](https://solengine.mathiassol.dev)** (or see `Website/`).
 

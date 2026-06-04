@@ -3,6 +3,7 @@
 layout(set = 0, binding = 0) uniform sampler2D s_hdr;
 layout(set = 0, binding = 1) uniform sampler2D s_bloom;
 layout(set = 0, binding = 2) uniform sampler2D s_ssr;
+layout(set = 0, binding = 3) uniform sampler2D s_vol_fog;
 
 layout(push_constant) uniform TonemapPush {
     vec4 params; // x=exposure  y=bloom_intensity  z=mode(0=ACES,1=Reinhard,2=Linear)  w=ssr_intensity
@@ -62,7 +63,9 @@ void main() {
     vec3 hdr     = texture(s_hdr,   v_uv).rgb;
     vec3 bloom   = texture(s_bloom, v_uv).rgb * pc.params.y;
     vec3 ssr     = texture(s_ssr,   v_uv).rgb * pc.params.w;
-    vec3 exposed = (hdr + bloom + ssr) * pc.params.x;
+    // Composite volumetric fog: rgb=inscatter, a=transmittance (1=no fog, 0=full fog)
+    vec4 fog     = texture(s_vol_fog, v_uv);
+    vec3 exposed = (hdr * fog.a + fog.rgb + bloom + ssr) * pc.params.x;
 
     int mode = int(pc.params.z + 0.5);
     vec3 mapped;

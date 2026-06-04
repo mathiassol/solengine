@@ -1,5 +1,7 @@
 #pragma once
 
+#include <glm/glm.hpp>
+
 namespace sol {
 
 // Anti-aliasing mode. Changes take effect on the next frame (triggers a rebuild).
@@ -73,14 +75,38 @@ struct RenderSettings {
     float taa_variance_gamma = 1.25f;   // YCoCg neighbourhood AABB expansion (γσ; tighter is safe in YCoCg)
     float taa_sharpening     = 0.2f;    // unsharp-mask strength applied after accumulation (0=off)
 
-    // ---- Volumetrics (future) -----------------------------------
-    // Placeholder — infrastructure (FrameUBO time, depth access) is ready.
-    // Set enabled=true once the volumetrics pass is implemented.
-    bool  vol_enabled         = false;  // toggle volumetric fog/scattering pass
-    float vol_density         = 0.05f;  // extinction coefficient (fog thickness)
-    float vol_scattering      = 0.3f;   // scattering albedo (0=absorb-only, 1=scatter-only)
-    float vol_g               = 0.0f;   // phase function anisotropy [-1,1]; 0=isotropic
-    int   vol_march_steps     = 32;     // ray-march sample count (quality vs performance)
+    // ---- Volumetrics ----------------------------------------------------
+    bool      vol_enabled          = false;   // master toggle
+    float     vol_near             = 0.5f;    // froxel grid near plane (m)
+    float     vol_far              = 64.0f;   // froxel grid far plane (m)
+
+    // Global uniform fog
+    bool      fog_enabled          = false;
+    float     fog_density          = 0.05f;   // extinction coefficient
+    float     fog_scattering       = 0.6f;    // scattering albedo [0,1]
+    glm::vec3 fog_albedo           = {1.0f, 1.0f, 1.0f};
+    float     fog_g                = 0.3f;    // phase anisotropy [-1,1]
+
+    // Exponential height fog
+    bool      height_fog_enabled   = false;
+    float     height_fog_density   = 0.1f;
+    float     height_fog_scattering= 0.6f;
+    float     height_fog_base      = 0.0f;    // base height (world Y)
+    float     height_fog_falloff   = 10.0f;   // scale height H (meters)
+    glm::vec3 height_fog_albedo    = {0.8f, 0.87f, 1.0f};
+
+    // Light scattering
+    float     vol_sun_intensity    = 1.0f;
+    float     vol_shadow_strength  = 1.0f;
+
+    // Fog noise (procedural FBM, computed in density shader)
+    bool  fog_noise_enabled    = false;
+    float fog_noise_scale      = 0.05f;
+    float fog_noise_speed      = 0.02f;
+    float fog_noise_strength   = 0.8f;
+    int   fog_noise_octaves    = 4;
+    float fog_noise_lacunarity = 2.0f;
+    float fog_noise_gain       = 0.5f;
 
     // ---- Performance / budgeting ----------------------------
     int fps_cap          = 0;      // 0 = unlimited; CPU-sleep to hit target (30 good for RDP)

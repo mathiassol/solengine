@@ -20,8 +20,8 @@ bool DescriptorManager::init(VkContext& ctx) {
 
     // Set 0: UBO binding 0, shadow sampler binding 1, raw shadow sampler binding 2, VSM sampler binding 3
     m_frame_layout = make_dsl(dev, {
-        { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
-        { 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
+        { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
+        { 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
         { 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
         { 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr }
     });
@@ -34,11 +34,12 @@ bool DescriptorManager::init(VkContext& ctx) {
         { 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr }
     });
 
-    // Post: HDR + bloom + SSR
+    // Post: HDR + bloom + SSR + vol_fog
     m_post_layout = make_dsl(dev, {
         { 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
         { 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
-        { 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr }
+        { 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
+        { 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr }
     });
 
     // Single sampler (bloom passes)
@@ -84,10 +85,31 @@ bool DescriptorManager::init(VkContext& ctx) {
         { 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr }
     });
 
+    // vol_density: binding 0 = storage image3D writeonly (density output)
+    m_vol_density_layout = make_dsl(dev, {
+        { 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr }
+    });
+
+    // vol_scatter: binding 0 = density (storage readonly), binding 1 = lighting (storage writeonly)
+    m_vol_scatter_layout = make_dsl(dev, {
+        { 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
+        { 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr }
+    });
+
+    // vol_resolve: binding 0 = depth sampler2D, binding 1 = lighting3D sampler3D,
+    //              binding 2 = history sampler2D, binding 3 = density3D (for per-pixel march)
+    m_vol_resolve_layout = make_dsl(dev, {
+        { 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
+        { 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
+        { 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
+        { 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr }
+    });
+
     // Per-frame descriptor pools — one per frame slot, reset when that slot's fence signals.
-    std::array<VkDescriptorPoolSize, 2> pool_sizes = {{
+    std::array<VkDescriptorPoolSize, 3> pool_sizes = {{
         { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         1024 },
-        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8192 }
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8192 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,            96 }
     }};
     VkDescriptorPoolCreateInfo pi{};
     pi.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -110,6 +132,9 @@ void DescriptorManager::shutdown(VkDevice device) {
     if (m_taa_input_layout)   { vkDestroyDescriptorSetLayout(device, m_taa_input_layout,   nullptr); m_taa_input_layout = VK_NULL_HANDLE; }
     if (m_ssr_ray_input_layout)      { vkDestroyDescriptorSetLayout(device, m_ssr_ray_input_layout,      nullptr); m_ssr_ray_input_layout = VK_NULL_HANDLE; }
     if (m_ssr_temporal_input_layout) { vkDestroyDescriptorSetLayout(device, m_ssr_temporal_input_layout, nullptr); m_ssr_temporal_input_layout = VK_NULL_HANDLE; }
+    if (m_vol_density_layout)        { vkDestroyDescriptorSetLayout(device, m_vol_density_layout,        nullptr); m_vol_density_layout = VK_NULL_HANDLE; }
+    if (m_vol_scatter_layout)        { vkDestroyDescriptorSetLayout(device, m_vol_scatter_layout,        nullptr); m_vol_scatter_layout = VK_NULL_HANDLE; }
+    if (m_vol_resolve_layout)        { vkDestroyDescriptorSetLayout(device, m_vol_resolve_layout,        nullptr); m_vol_resolve_layout = VK_NULL_HANDLE; }
     for (auto& pool : m_pools) {
         if (pool) { vkDestroyDescriptorPool(device, pool, nullptr); pool = VK_NULL_HANDLE; }
     }
@@ -171,20 +196,23 @@ VkDescriptorSet DescriptorManager::alloc_material_set(VkDevice device,
 }
 
 VkDescriptorSet DescriptorManager::alloc_post_set(VkDevice device,
-                                                   VkImageView hdr,   VkSampler hdr_samp,
-                                                   VkImageView bloom, VkSampler bloom_samp,
-                                                   VkImageView ssr,   VkSampler ssr_samp)
+                                                   VkImageView hdr,     VkSampler hdr_samp,
+                                                   VkImageView bloom,   VkSampler bloom_samp,
+                                                   VkImageView ssr,     VkSampler ssr_samp,
+                                                   VkImageView fog,     VkSampler fog_samp)
 {
     auto set = alloc_set(device, m_pools[m_active_pool_idx], m_post_layout);
-    std::array<VkDescriptorImageInfo, 3> imgs = {{
+    std::array<VkDescriptorImageInfo, 4> imgs = {{
         { hdr_samp,   hdr,   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
         { bloom_samp, bloom, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
-        { ssr_samp,   ssr,   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }
+        { ssr_samp,   ssr,   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+        { fog_samp,   fog,   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }
     }};
-    std::array<VkWriteDescriptorSet, 3> writes = {{
+    std::array<VkWriteDescriptorSet, 4> writes = {{
         { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 0, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &imgs[0], nullptr, nullptr },
         { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 1, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &imgs[1], nullptr, nullptr },
-        { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 2, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &imgs[2], nullptr, nullptr }
+        { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 2, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &imgs[2], nullptr, nullptr },
+        { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 3, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &imgs[3], nullptr, nullptr }
     }};
     vkUpdateDescriptorSets(device, (uint32_t)writes.size(), writes.data(), 0, nullptr);
     return set;
@@ -310,6 +338,55 @@ VkDescriptorSet DescriptorManager::alloc_ssr_temporal_set(VkDevice device,
         { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 0, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &imgs[0], nullptr, nullptr },
         { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 1, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &imgs[1], nullptr, nullptr },
         { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 2, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &imgs[2], nullptr, nullptr }
+    }};
+    vkUpdateDescriptorSets(device, (uint32_t)writes.size(), writes.data(), 0, nullptr);
+    return set;
+}
+
+VkDescriptorSet DescriptorManager::alloc_vol_density_set(VkDevice device, VkImageView density_view) {
+    auto set = alloc_set(device, m_pools[m_active_pool_idx], m_vol_density_layout);
+    VkDescriptorImageInfo img{ VK_NULL_HANDLE, density_view, VK_IMAGE_LAYOUT_GENERAL };
+    VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 0, 0, 1,
+                             VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &img, nullptr, nullptr };
+    vkUpdateDescriptorSets(device, 1, &w, 0, nullptr);
+    return set;
+}
+
+VkDescriptorSet DescriptorManager::alloc_vol_scatter_set(VkDevice device,
+                                                          VkImageView density_view,
+                                                          VkImageView lighting_view)
+{
+    auto set = alloc_set(device, m_pools[m_active_pool_idx], m_vol_scatter_layout);
+    std::array<VkDescriptorImageInfo, 2> imgs = {{
+        { VK_NULL_HANDLE, density_view,  VK_IMAGE_LAYOUT_GENERAL },
+        { VK_NULL_HANDLE, lighting_view, VK_IMAGE_LAYOUT_GENERAL }
+    }};
+    std::array<VkWriteDescriptorSet, 2> writes = {{
+        { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 0, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &imgs[0], nullptr, nullptr },
+        { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &imgs[1], nullptr, nullptr }
+    }};
+    vkUpdateDescriptorSets(device, (uint32_t)writes.size(), writes.data(), 0, nullptr);
+    return set;
+}
+
+VkDescriptorSet DescriptorManager::alloc_vol_resolve_set(VkDevice device,
+                                                          VkImageView depth_view,        VkSampler depth_samp,
+                                                          VkImageView lighting_view,     VkSampler lighting_samp,
+                                                          VkImageView history_view,      VkSampler history_samp,
+                                                          VkImageView density_view,      VkSampler density_samp)
+{
+    auto set = alloc_set(device, m_pools[m_active_pool_idx], m_vol_resolve_layout);
+    std::array<VkDescriptorImageInfo, 4> imgs = {{
+        { depth_samp,    depth_view,    VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL },
+        { lighting_samp, lighting_view, VK_IMAGE_LAYOUT_GENERAL },
+        { history_samp,  history_view,  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+        { density_samp,  density_view,  VK_IMAGE_LAYOUT_GENERAL }
+    }};
+    std::array<VkWriteDescriptorSet, 4> writes = {{
+        { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 0, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &imgs[0], nullptr, nullptr },
+        { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 1, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &imgs[1], nullptr, nullptr },
+        { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 2, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &imgs[2], nullptr, nullptr },
+        { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 3, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &imgs[3], nullptr, nullptr }
     }};
     vkUpdateDescriptorSets(device, (uint32_t)writes.size(), writes.data(), 0, nullptr);
     return set;

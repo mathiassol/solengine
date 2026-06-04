@@ -16,6 +16,7 @@
 #include "sol/scene/lua_component.h"
 #include "sol/scene/audio_stream_player.h"
 #include "sol/scene/audio_stream_player3d.h"
+#include "sol/scene/world_environment.h"
 #include "sol/audio/audio_engine.h"
 #include "physics/physics.h"
 #include "platform/window.h"
@@ -31,8 +32,24 @@ extern "C" {
 }
 
 #include <LuaBridge/LuaBridge.h>
+#include <imgui.h>
+#include <nlohmann/json.hpp>
 #include <cstdio>
 #include <string>
+#include <thread>
+#include <mutex>
+#include <vector>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <winhttp.h>
+#endif
 
 namespace sol {
 
@@ -101,6 +118,31 @@ static std::string mesh_get_name(const MeshNode* n) { return n ? n->mesh_name : 
 static void mesh_set_name(MeshNode* n, const std::string& s) { if (n) n->mesh_name = s; }
 static std::string mesh_get_path(const MeshNode* n) { return n ? n->mesh_path : ""; }
 static void mesh_set_path(MeshNode* n, const std::string& s) { if (n) n->mesh_path = s; }
+
+// Material — base color
+static float mesh_get_cr(const MeshNode* n) { return n ? n->material.base_color.r : 1.f; }
+static void  mesh_set_cr(MeshNode* n, float v) { if (n) n->material.base_color.r = v; }
+static float mesh_get_cg(const MeshNode* n) { return n ? n->material.base_color.g : 1.f; }
+static void  mesh_set_cg(MeshNode* n, float v) { if (n) n->material.base_color.g = v; }
+static float mesh_get_cb(const MeshNode* n) { return n ? n->material.base_color.b : 1.f; }
+static void  mesh_set_cb(MeshNode* n, float v) { if (n) n->material.base_color.b = v; }
+static float mesh_get_ca(const MeshNode* n) { return n ? n->material.base_color.a : 1.f; }
+static void  mesh_set_ca(MeshNode* n, float v) { if (n) n->material.base_color.a = v; }
+// Material — PBR
+static float mesh_get_metallic (const MeshNode* n) { return n ? n->material.metallic  : 0.f; }
+static void  mesh_set_metallic (MeshNode* n, float v) { if (n) n->material.metallic  = v; }
+static float mesh_get_roughness(const MeshNode* n) { return n ? n->material.roughness : 0.5f; }
+static void  mesh_set_roughness(MeshNode* n, float v) { if (n) n->material.roughness = v; }
+// Material — emissive
+static float mesh_get_er(const MeshNode* n) { return n ? n->material.emissive.r : 0.f; }
+static void  mesh_set_er(MeshNode* n, float v) { if (n) n->material.emissive.r = v; }
+static float mesh_get_eg(const MeshNode* n) { return n ? n->material.emissive.g : 0.f; }
+static void  mesh_set_eg(MeshNode* n, float v) { if (n) n->material.emissive.g = v; }
+static float mesh_get_eb(const MeshNode* n) { return n ? n->material.emissive.b : 0.f; }
+static void  mesh_set_eb(MeshNode* n, float v) { if (n) n->material.emissive.b = v; }
+// Material — flags
+static bool mesh_get_lit(const MeshNode* n) { return n ? n->material.lit : true; }
+static void mesh_set_lit(MeshNode* n, bool v) { if (n) n->material.lit = v; }
 
 static glm::vec3 pl_get_color(const PointLight* n)         { return n ? n->color : glm::vec3{1.0f}; }
 static void pl_set_color(PointLight* n, glm::vec3 v)       { if (n) n->color = v; }
@@ -179,6 +221,10 @@ static Node* engine_find_node(Engine* e, const std::string& name) {
         return nullptr;
     return scene->root()->find(name);
 }
+static MeshNode* engine_find_mesh_node(Engine* e, const std::string& name) {
+    auto* n = engine_find_node(e, name);
+    return dynamic_cast<MeshNode*>(n);
+}
 static void engine_log(Engine*, const std::string& msg) {
     sol::log::info("[Lua] " + msg);
 }
@@ -218,6 +264,262 @@ static void asp3_play      (AudioStreamPlayer3D* n) { if (n) n->play(); }
 static void asp3_stop      (AudioStreamPlayer3D* n) { if (n) n->stop(); }
 static void asp3_pause     (AudioStreamPlayer3D* n) { if (n) n->pause(); }
 static bool asp3_is_playing(AudioStreamPlayer3D* n) { return n && n->is_playing(); }
+
+// --- WorldEnvironment helpers ---
+static int    we_get_sky_mode(const WorldEnvironment* n)          { return n->sky_mode; }
+static void   we_set_sky_mode(WorldEnvironment* n, int v)         { n->sky_mode = v; }
+static std::string we_get_hdr_path(const WorldEnvironment* n)     { return n->hdr_path; }
+static void   we_set_hdr_path(WorldEnvironment* n, const std::string& v) { n->hdr_path = v; }
+static float  we_get_tod(const WorldEnvironment* n)               { return n->time_of_day; }
+static void   we_set_tod(WorldEnvironment* n, float v)            { n->time_of_day = v; }
+static bool   we_get_auto_sun(const WorldEnvironment* n)          { return n->auto_sun; }
+static void   we_set_auto_sun(WorldEnvironment* n, bool v)        { n->auto_sun = v; }
+static float  we_get_latitude(const WorldEnvironment* n)          { return n->latitude; }
+static void   we_set_latitude(WorldEnvironment* n, float v)       { n->latitude = v; }
+static float  we_get_turbidity(const WorldEnvironment* n)         { return n->turbidity; }
+static void   we_set_turbidity(WorldEnvironment* n, float v)      { n->turbidity = v; }
+static float  we_get_sun_int(const WorldEnvironment* n)           { return n->sun_intensity; }
+static void   we_set_sun_int(WorldEnvironment* n, float v)        { n->sun_intensity = v; }
+static float  we_get_rayleigh(const WorldEnvironment* n)          { return n->rayleigh_scale; }
+static void   we_set_rayleigh(WorldEnvironment* n, float v)       { n->rayleigh_scale = v; }
+static float  we_get_mie(const WorldEnvironment* n)               { return n->mie_strength; }
+static void   we_set_mie(WorldEnvironment* n, float v)            { n->mie_strength = v; }
+static float  we_get_bloom_mult(const WorldEnvironment* n)        { return n->sun_bloom_mult; }
+static void   we_set_bloom_mult(WorldEnvironment* n, float v)     { n->sun_bloom_mult = v; }
+static float  we_get_night(const WorldEnvironment* n)             { return n->night_brightness; }
+static void   we_set_night(WorldEnvironment* n, float v)          { n->night_brightness = v; }
+static float  we_get_sky_exp(const WorldEnvironment* n)           { return n->sky_exposure; }
+static void   we_set_sky_exp(WorldEnvironment* n, float v)        { n->sky_exposure = v; }
+static float  we_get_sun_disk(const WorldEnvironment* n)          { return n->sun_disk_size_deg; }
+static void   we_set_sun_disk(WorldEnvironment* n, float v)       { n->sun_disk_size_deg = v; }
+static float  we_get_exposure(const WorldEnvironment* n)          { return n->exposure; }
+static void   we_set_exposure(WorldEnvironment* n, float v)       { n->exposure = v; }
+static bool   we_get_bloom_en(const WorldEnvironment* n)          { return n->bloom_enabled; }
+static void   we_set_bloom_en(WorldEnvironment* n, bool v)        { n->bloom_enabled = v; }
+static float  we_get_bloom_th(const WorldEnvironment* n)          { return n->bloom_threshold; }
+static void   we_set_bloom_th(WorldEnvironment* n, float v)       { n->bloom_threshold = v; }
+static float  we_get_bloom_int(const WorldEnvironment* n)         { return n->bloom_intensity; }
+static void   we_set_bloom_int(WorldEnvironment* n, float v)      { n->bloom_intensity = v; }
+static float  we_get_ambient_int(const WorldEnvironment* n)       { return n->ambient_intensity; }
+static void   we_set_ambient_int(WorldEnvironment* n, float v)    { n->ambient_intensity = v; }
+static bool   we_get_fog_en(const WorldEnvironment* n)            { return n->fog_enabled; }
+static void   we_set_fog_en(WorldEnvironment* n, bool v)          { n->fog_enabled = v; }
+static float  we_get_fog_den(const WorldEnvironment* n)           { return n->fog_density; }
+static void   we_set_fog_den(WorldEnvironment* n, float v)        { n->fog_density = v; }
+static bool   we_get_vol_en(const WorldEnvironment* n)            { return n->vol_enabled; }
+static void   we_set_vol_en(WorldEnvironment* n, bool v)          { n->vol_enabled = v; }
+static float  we_get_vol_far(const WorldEnvironment* n)           { return n->vol_far; }
+static void   we_set_vol_far(WorldEnvironment* n, float v)        { n->vol_far = v; }
+static float  we_get_ssao_radius(const WorldEnvironment* n)       { return n->ssao_radius; }
+static void   we_set_ssao_radius(WorldEnvironment* n, float v)    { n->ssao_radius = v; }
+static bool   we_get_ssao_en(const WorldEnvironment* n)           { return n->ssao_enabled; }
+static void   we_set_ssao_en(WorldEnvironment* n, bool v)          { n->ssao_enabled = v; }
+// Sky color tinting helpers
+static float  we_get_sky_tint_r(const WorldEnvironment* n)         { return n->sky_tint.r; }
+static void   we_set_sky_tint_r(WorldEnvironment* n, float v)      { n->sky_tint.r = v; }
+static float  we_get_sky_tint_g(const WorldEnvironment* n)         { return n->sky_tint.g; }
+static void   we_set_sky_tint_g(WorldEnvironment* n, float v)      { n->sky_tint.g = v; }
+static float  we_get_sky_tint_b(const WorldEnvironment* n)         { return n->sky_tint.b; }
+static void   we_set_sky_tint_b(WorldEnvironment* n, float v)      { n->sky_tint.b = v; }
+static float  we_get_sun_tint_r(const WorldEnvironment* n)         { return n->sun_color_tint.r; }
+static void   we_set_sun_tint_r(WorldEnvironment* n, float v)      { n->sun_color_tint.r = v; }
+static float  we_get_sun_tint_g(const WorldEnvironment* n)         { return n->sun_color_tint.g; }
+static void   we_set_sun_tint_g(WorldEnvironment* n, float v)      { n->sun_color_tint.g = v; }
+static float  we_get_sun_tint_b(const WorldEnvironment* n)         { return n->sun_color_tint.b; }
+static void   we_set_sun_tint_b(WorldEnvironment* n, float v)      { n->sun_color_tint.b = v; }
+static float  we_get_night_col_r(const WorldEnvironment* n)        { return n->night_sky_color.r; }
+static void   we_set_night_col_r(WorldEnvironment* n, float v)     { n->night_sky_color.r = v; }
+static float  we_get_night_col_g(const WorldEnvironment* n)        { return n->night_sky_color.g; }
+static void   we_set_night_col_g(WorldEnvironment* n, float v)     { n->night_sky_color.g = v; }
+static float  we_get_night_col_b(const WorldEnvironment* n)        { return n->night_sky_color.b; }
+static void   we_set_night_col_b(WorldEnvironment* n, float v)     { n->night_sky_color.b = v; }
+static float  we_get_ground_col_r(const WorldEnvironment* n)       { return n->ground_color.r; }
+static void   we_set_ground_col_r(WorldEnvironment* n, float v)    { n->ground_color.r = v; }
+static float  we_get_ground_col_g(const WorldEnvironment* n)       { return n->ground_color.g; }
+static void   we_set_ground_col_g(WorldEnvironment* n, float v)    { n->ground_color.g = v; }
+static float  we_get_ground_col_b(const WorldEnvironment* n)       { return n->ground_color.b; }
+static void   we_set_ground_col_b(WorldEnvironment* n, float v)    { n->ground_color.b = v; }
+static float  we_get_star_density(const WorldEnvironment* n)       { return n->star_density; }
+static void   we_set_star_density(WorldEnvironment* n, float v)    { n->star_density = v; }
+static float  we_get_star_brightness(const WorldEnvironment* n)    { return n->star_brightness; }
+static void   we_set_star_brightness(WorldEnvironment* n, float v) { n->star_brightness = v; }
+
+// --- HTTP implementation ---
+struct HttpResult {
+    bool        ok     = false;
+    int         status = 0;
+    std::string body;
+    std::string error;
+};
+
+#ifdef _WIN32
+static HttpResult http_request_sync(const std::string& method,
+                                    const std::string& url,
+                                    const std::string& post_body = "",
+                                    const std::string& content_type = "application/json") {
+    HttpResult result;
+
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, url.c_str(), -1, nullptr, 0);
+    std::wstring wurl(wlen, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, url.c_str(), -1, &wurl[0], wlen);
+
+    URL_COMPONENTS comps{};
+    comps.dwStructSize = sizeof(comps);
+    wchar_t scheme_buf[16]{}, host_buf[512]{}, path_buf[4096]{};
+    comps.lpszScheme   = scheme_buf;  comps.dwSchemeLength   = 16;
+    comps.lpszHostName = host_buf;    comps.dwHostNameLength = 512;
+    comps.lpszUrlPath  = path_buf;    comps.dwUrlPathLength  = 4096;
+    if (!WinHttpCrackUrl(wurl.c_str(), 0, 0, &comps)) {
+        result.error = "Invalid URL";
+        return result;
+    }
+
+    bool is_https = (comps.nScheme == INTERNET_SCHEME_HTTPS);
+    INTERNET_PORT port = comps.nPort > 0 ? comps.nPort : (is_https ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT);
+
+    HINTERNET session = WinHttpOpen(L"SolEngine/1.0",
+                                    WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                                    WINHTTP_NO_PROXY_NAME,
+                                    WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!session) { result.error = "WinHttpOpen failed"; return result; }
+
+    HINTERNET connect = WinHttpConnect(session, host_buf, port, 0);
+    if (!connect) {
+        WinHttpCloseHandle(session);
+        result.error = "WinHttpConnect failed";
+        return result;
+    }
+
+    int mlen = MultiByteToWideChar(CP_UTF8, 0, method.c_str(), -1, nullptr, 0);
+    std::wstring wmethod(mlen, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, method.c_str(), -1, &wmethod[0], mlen);
+
+    DWORD req_flags = is_https ? WINHTTP_FLAG_SECURE : 0;
+    HINTERNET request = WinHttpOpenRequest(connect, wmethod.c_str(), path_buf,
+                                           nullptr, WINHTTP_NO_REFERER,
+                                           WINHTTP_DEFAULT_ACCEPT_TYPES, req_flags);
+    if (!request) {
+        WinHttpCloseHandle(connect);
+        WinHttpCloseHandle(session);
+        result.error = "WinHttpOpenRequest failed";
+        return result;
+    }
+
+    LPVOID send_data = WINHTTP_NO_REQUEST_DATA;
+    DWORD  send_size = 0;
+    if (!post_body.empty()) {
+        int ctlen = MultiByteToWideChar(CP_UTF8, 0, content_type.c_str(), -1, nullptr, 0);
+        std::wstring wct(ctlen, L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, content_type.c_str(), -1, &wct[0], ctlen);
+        std::wstring header = L"Content-Type: " + wct;
+        WinHttpAddRequestHeaders(request, header.c_str(), (DWORD)header.size(),
+                                 WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE);
+        send_data = (LPVOID)post_body.c_str();
+        send_size = (DWORD)post_body.size();
+    }
+
+    BOOL sent = WinHttpSendRequest(request,
+                                   WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                                   send_data, send_size, send_size, 0);
+    if (sent) sent = WinHttpReceiveResponse(request, nullptr);
+
+    if (sent) {
+        DWORD status_code = 0;
+        DWORD buf_size = sizeof(status_code);
+        WinHttpQueryHeaders(request,
+                            WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                            WINHTTP_HEADER_NAME_BY_INDEX,
+                            &status_code, &buf_size,
+                            WINHTTP_NO_HEADER_INDEX);
+        result.status = (int)status_code;
+        result.ok = (status_code >= 200 && status_code < 300);
+
+        DWORD bytes_avail = 0;
+        while (WinHttpQueryDataAvailable(request, &bytes_avail) && bytes_avail > 0) {
+            std::string chunk(bytes_avail, '\0');
+            DWORD bytes_read = 0;
+            WinHttpReadData(request, &chunk[0], bytes_avail, &bytes_read);
+            result.body.append(chunk, 0, bytes_read);
+        }
+    } else {
+        DWORD err = GetLastError();
+        result.error = "Request failed (WinHTTP error " + std::to_string(err) + ")";
+    }
+
+    WinHttpCloseHandle(request);
+    WinHttpCloseHandle(connect);
+    WinHttpCloseHandle(session);
+    return result;
+}
+#else
+static HttpResult http_request_sync(const std::string& /*method*/,
+                                    const std::string& /*url*/,
+                                    const std::string& /*body*/ = "",
+                                    const std::string& /*ct*/   = "") {
+    return {false, 0, "", "HTTP not supported on this platform"};
+}
+#endif
+
+// --- Http Lua C-functions ---
+static ScriptEngine* g_script_engine_for_http = nullptr;
+
+static int lua_http_get(lua_State* L) {
+    size_t url_len = 0;
+    const char* url = luaL_checklstring(L, 1, &url_len);
+    auto r = http_request_sync("GET", std::string(url, url_len));
+    lua_newtable(L);
+    lua_pushboolean(L, r.ok ? 1 : 0); lua_setfield(L, -2, "ok");
+    lua_pushinteger(L, r.status);      lua_setfield(L, -2, "status");
+    lua_pushlstring(L, r.body.c_str(), r.body.size()); lua_setfield(L, -2, "body");
+    lua_pushstring(L, r.error.c_str()); lua_setfield(L, -2, "error");
+    return 1;
+}
+
+static int lua_http_post(lua_State* L) {
+    size_t url_len = 0;
+    const char* url = luaL_checklstring(L, 1, &url_len);
+    std::string body = (lua_gettop(L) >= 2 && !lua_isnil(L, 2)) ? lua_tostring(L, 2) : "";
+    std::string ct   = (lua_gettop(L) >= 3 && !lua_isnil(L, 3)) ? lua_tostring(L, 3) : "application/json";
+    auto r = http_request_sync("POST", std::string(url, url_len), body, ct);
+    lua_newtable(L);
+    lua_pushboolean(L, r.ok ? 1 : 0); lua_setfield(L, -2, "ok");
+    lua_pushinteger(L, r.status);      lua_setfield(L, -2, "status");
+    lua_pushlstring(L, r.body.c_str(), r.body.size()); lua_setfield(L, -2, "body");
+    lua_pushstring(L, r.error.c_str()); lua_setfield(L, -2, "error");
+    return 1;
+}
+
+static int lua_http_get_async(lua_State* L) {
+    size_t url_len = 0;
+    const char* url_c = luaL_checklstring(L, 1, &url_len);
+    luaL_checktype(L, 2, LUA_TFUNCTION);
+    std::string url(url_c, url_len);
+    lua_pushvalue(L, 2);
+    int cb_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    ScriptEngine* se = g_script_engine_for_http;
+    std::thread([se, url, cb_ref]() {
+        auto r = http_request_sync("GET", url);
+        if (se) se->push_http_result(r.ok, r.status, std::move(r.body), std::move(r.error), cb_ref);
+    }).detach();
+    return 0;
+}
+
+static int lua_http_post_async(lua_State* L) {
+    size_t url_len = 0;
+    const char* url_c = luaL_checklstring(L, 1, &url_len);
+    std::string body = (lua_gettop(L) >= 2 && !lua_isnil(L, 2)) ? lua_tostring(L, 2) : "";
+    std::string ct   = (lua_gettop(L) >= 3 && !lua_isnil(L, 3)) ? lua_tostring(L, 3) : "application/json";
+    luaL_checktype(L, 4, LUA_TFUNCTION);
+    std::string url(url_c, url_len);
+    lua_pushvalue(L, 4);
+    int cb_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    ScriptEngine* se = g_script_engine_for_http;
+    std::thread([se, url, body, ct, cb_ref]() {
+        auto r = http_request_sync("POST", url, body, ct);
+        if (se) se->push_http_result(r.ok, r.status, std::move(r.body), std::move(r.error), cb_ref);
+    }).detach();
+    return 0;
+}
 
 // AudioEngine helpers
 static void ae_set_master_vol(AudioEngine* ae, float v) { if (ae) ae->set_master_volume(v); }
@@ -311,9 +613,17 @@ static int engine_create_node_lua(lua_State* L) {
     }
     Node* raw = node.get();
     e->script().track_pending_node(std::move(node));
-    if      (auto* rb = dynamic_cast<RigidBody3D*>(raw))  (void)luabridge::push(L, rb);
-    else if (auto* n3 = dynamic_cast<Node3D*>(raw))       (void)luabridge::push(L, n3);
-    else                                                   (void)luabridge::push(L, raw);
+    // Must check most-derived first so MeshNode doesn't get pushed as Node3D
+    if      (auto* p = dynamic_cast<MeshNode*>(raw))           (void)luabridge::push(L, p);
+    else if (auto* p = dynamic_cast<RigidBody3D*>(raw))        (void)luabridge::push(L, p);
+    else if (auto* p = dynamic_cast<CharacterBody3D*>(raw))    (void)luabridge::push(L, p);
+    else if (auto* p = dynamic_cast<PointLight*>(raw))         (void)luabridge::push(L, p);
+    else if (auto* p = dynamic_cast<DirectionalLight*>(raw))   (void)luabridge::push(L, p);
+    else if (auto* p = dynamic_cast<Camera3D*>(raw))           (void)luabridge::push(L, p);
+    else if (auto* p = dynamic_cast<ScriptNode*>(raw))         (void)luabridge::push(L, p);
+    else if (auto* p = dynamic_cast<Area3D*>(raw))             (void)luabridge::push(L, p);
+    else if (auto* p = dynamic_cast<Node3D*>(raw))             (void)luabridge::push(L, p);
+    else                                                       (void)luabridge::push(L, raw);
     return 1;
 }
 
@@ -577,6 +887,40 @@ struct InputCb {
 };
 Engine* InputCb::eng = nullptr;
 
+static WorldEnvironment* engine_get_world_env(Engine* e) {
+    if (!e) return nullptr;
+    Scene* sc = e->scene_manager().current_scene();
+    if (!sc || !sc->root()) return nullptr;
+    return sc->root()->find_first<WorldEnvironment>();
+}
+
+// Recursively push a nlohmann::json value onto the Lua stack.
+static void push_json(lua_State* L, const nlohmann::json& j) {
+    if      (j.is_null())            lua_pushnil(L);
+    else if (j.is_boolean())         lua_pushboolean(L, j.get<bool>() ? 1 : 0);
+    else if (j.is_number_integer())  lua_pushinteger(L, (lua_Integer)j.get<int64_t>());
+    else if (j.is_number_float())    lua_pushnumber(L, (lua_Number)j.get<double>());
+    else if (j.is_string())          lua_pushstring(L, j.get<std::string>().c_str());
+    else if (j.is_array()) {
+        lua_newtable(L);
+        for (int i = 0; i < (int)j.size(); i++) {
+            push_json(L, j[i]);
+            lua_rawseti(L, -2, i + 1);
+        }
+    } else if (j.is_object()) {
+        lua_newtable(L);
+        for (auto& [key, val] : j.items()) {
+            push_json(L, val);
+            lua_setfield(L, -2, key.c_str());
+        }
+    } else {
+        lua_pushnil(L);
+    }
+}
+
+// Single shared input text buffer for in-game text fields (name entry, etc.)
+static char s_ui_input_buf[64] = "Player";
+
 void ScriptEngine::register_bindings() {
     auto& L = *m_lua;
 
@@ -643,8 +987,22 @@ void ScriptEngine::register_bindings() {
             .endClass()
 
             .deriveClass<MeshNode, Node3D>("MeshNode")
-                .addProperty("mesh_name", &mesh_get_name, &mesh_set_name)
-                .addProperty("mesh_path", &mesh_get_path, &mesh_set_path)
+                .addProperty("mesh_name",  &mesh_get_name, &mesh_set_name)
+                .addProperty("mesh_path",  &mesh_get_path, &mesh_set_path)
+                // Material base color
+                .addProperty("color_r",    &mesh_get_cr,       &mesh_set_cr)
+                .addProperty("color_g",    &mesh_get_cg,       &mesh_set_cg)
+                .addProperty("color_b",    &mesh_get_cb,       &mesh_set_cb)
+                .addProperty("color_a",    &mesh_get_ca,       &mesh_set_ca)
+                // PBR
+                .addProperty("metallic",   &mesh_get_metallic,  &mesh_set_metallic)
+                .addProperty("roughness",  &mesh_get_roughness, &mesh_set_roughness)
+                // Emissive
+                .addProperty("emissive_r", &mesh_get_er,        &mesh_set_er)
+                .addProperty("emissive_g", &mesh_get_eg,        &mesh_set_eg)
+                .addProperty("emissive_b", &mesh_get_eb,        &mesh_set_eb)
+                // Flags
+                .addProperty("lit",        &mesh_get_lit,       &mesh_set_lit)
             .endClass()
 
             .deriveClass<PointLight, Node3D>("PointLight")
@@ -713,6 +1071,47 @@ void ScriptEngine::register_bindings() {
                 .addFunction("is_playing",   &asp3_is_playing)
             .endClass()
 
+            .deriveClass<WorldEnvironment, Node>("WorldEnvironment")
+                .addProperty("sky_mode",         &we_get_sky_mode,    &we_set_sky_mode)
+                .addProperty("hdr_path",          &we_get_hdr_path,    &we_set_hdr_path)
+                .addProperty("time_of_day",       &we_get_tod,         &we_set_tod)
+                .addProperty("auto_sun",          &we_get_auto_sun,    &we_set_auto_sun)
+                .addProperty("latitude",          &we_get_latitude,    &we_set_latitude)
+                .addProperty("turbidity",         &we_get_turbidity,   &we_set_turbidity)
+                .addProperty("sun_intensity",     &we_get_sun_int,     &we_set_sun_int)
+                .addProperty("rayleigh_scale",    &we_get_rayleigh,    &we_set_rayleigh)
+                .addProperty("mie_strength",      &we_get_mie,         &we_set_mie)
+                .addProperty("sun_bloom_mult",    &we_get_bloom_mult,  &we_set_bloom_mult)
+                .addProperty("night_brightness",  &we_get_night,       &we_set_night)
+                .addProperty("sky_exposure",      &we_get_sky_exp,     &we_set_sky_exp)
+                .addProperty("sun_disk_size_deg", &we_get_sun_disk,    &we_set_sun_disk)
+                .addProperty("exposure",          &we_get_exposure,    &we_set_exposure)
+                .addProperty("bloom_enabled",     &we_get_bloom_en,    &we_set_bloom_en)
+                .addProperty("bloom_threshold",   &we_get_bloom_th,    &we_set_bloom_th)
+                .addProperty("bloom_intensity",   &we_get_bloom_int,   &we_set_bloom_int)
+                .addProperty("ambient_intensity", &we_get_ambient_int, &we_set_ambient_int)
+                .addProperty("fog_enabled",       &we_get_fog_en,      &we_set_fog_en)
+                .addProperty("fog_density",       &we_get_fog_den,     &we_set_fog_den)
+                .addProperty("vol_enabled",       &we_get_vol_en,      &we_set_vol_en)
+                .addProperty("vol_far",           &we_get_vol_far,     &we_set_vol_far)
+                .addProperty("ssao_enabled",      &we_get_ssao_en,         &we_set_ssao_en)
+                .addProperty("ssao_radius",       &we_get_ssao_radius,     &we_set_ssao_radius)
+                .addProperty("sky_tint_r",        &we_get_sky_tint_r,      &we_set_sky_tint_r)
+                .addProperty("sky_tint_g",        &we_get_sky_tint_g,      &we_set_sky_tint_g)
+                .addProperty("sky_tint_b",        &we_get_sky_tint_b,      &we_set_sky_tint_b)
+                .addProperty("sun_tint_r",        &we_get_sun_tint_r,      &we_set_sun_tint_r)
+                .addProperty("sun_tint_g",        &we_get_sun_tint_g,      &we_set_sun_tint_g)
+                .addProperty("sun_tint_b",        &we_get_sun_tint_b,      &we_set_sun_tint_b)
+                .addProperty("night_sky_color_r", &we_get_night_col_r,     &we_set_night_col_r)
+                .addProperty("night_sky_color_g", &we_get_night_col_g,     &we_set_night_col_g)
+                .addProperty("night_sky_color_b", &we_get_night_col_b,     &we_set_night_col_b)
+                .addProperty("ground_color_r",    &we_get_ground_col_r,    &we_set_ground_col_r)
+                .addProperty("ground_color_g",    &we_get_ground_col_g,    &we_set_ground_col_g)
+                .addProperty("ground_color_b",    &we_get_ground_col_b,    &we_set_ground_col_b)
+                .addProperty("star_density",      &we_get_star_density,    &we_set_star_density)
+                .addProperty("star_brightness",   &we_get_star_brightness, &we_set_star_brightness)
+            .endClass()
+
             .beginClass<AudioEngine>("AudioEngine")
                 .addFunction("set_master_volume", &ae_set_master_vol)
                 .addFunction("get_master_volume", &ae_get_master_vol)
@@ -728,6 +1127,7 @@ void ScriptEngine::register_bindings() {
                 .addFunction("mouse_down", &engine_mouse)
                 .addFunction("load_scene", &engine_load_scene)
                 .addFunction("find_node", &engine_find_node)
+                .addFunction("find_mesh_node", &engine_find_mesh_node)
                 .addFunction("log", &engine_log)
                 .addFunction("cursor_x", &engine_cursor_x)
                 .addFunction("cursor_y", &engine_cursor_y)
@@ -751,6 +1151,7 @@ void ScriptEngine::register_bindings() {
                 .addFunction("cancel_timer",  &engine_cancel_timer)
                 .addFunction("screen_width",  &engine_screen_w)
                 .addFunction("screen_height", &engine_screen_h)
+                .addFunction("get_world_environment", &engine_get_world_env)
             .endClass()
 
             .addFunction("vec3", &vec3_new)
@@ -814,6 +1215,154 @@ void ScriptEngine::register_bindings() {
 
     lua_setglobal(&L, "Input");
 
+    // --- Http global ---
+    g_script_engine_for_http = this;
+    lua_newtable(&L);
+    lua_pushcfunction(&L, lua_http_get);        lua_setfield(&L, -2, "get");
+    lua_pushcfunction(&L, lua_http_post);       lua_setfield(&L, -2, "post");
+    lua_pushcfunction(&L, lua_http_get_async);  lua_setfield(&L, -2, "get_async");
+    lua_pushcfunction(&L, lua_http_post_async); lua_setfield(&L, -2, "post_async");
+    lua_setglobal(&L, "Http");
+
+    // --- UI global — ImGui wrappers for in-game HUD overlays ---
+    // ImGui::NewFrame() is already called before Lua scripts run (engine game loop),
+    // so it is safe to call any ImGui function from on_process / on_ready.
+    {
+        auto add_ui = [&](const char* name, lua_CFunction fn) {
+            lua_pushcfunction(&L, fn);
+            lua_setfield(&L, -2, name);
+        };
+        lua_newtable(&L);
+
+        // UI.begin_panel(title [, alpha])
+        // Opens a borderless overlay window. Call UI.end_panel() after.
+        add_ui("begin_panel", [](lua_State* L) -> int {
+            const char* title = lua_tostring(L, 1);
+            float alpha = lua_isnumber(L, 2) ? (float)lua_tonumber(L, 2) : 0.75f;
+            ImGui::SetNextWindowBgAlpha(alpha);
+            ImGui::Begin(title ? title : "##panel", nullptr,
+                ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove);
+            return 0;
+        });
+
+        // UI.end_panel()
+        add_ui("end_panel", [](lua_State* L) -> int {
+            ImGui::End();
+            return 0;
+        });
+
+        // UI.text(str)
+        add_ui("text", [](lua_State* L) -> int {
+            const char* s = lua_tostring(L, 1);
+            ImGui::Text("%s", s ? s : "");
+            return 0;
+        });
+
+        // UI.colored_text(r, g, b, a, str)
+        add_ui("colored_text", [](lua_State* L) -> int {
+            float r = (float)luaL_optnumber(L, 1, 1.0);
+            float g = (float)luaL_optnumber(L, 2, 1.0);
+            float b = (float)luaL_optnumber(L, 3, 1.0);
+            float a = (float)luaL_optnumber(L, 4, 1.0);
+            const char* s = lua_tostring(L, 5);
+            ImGui::TextColored(ImVec4(r, g, b, a), "%s", s ? s : "");
+            return 0;
+        });
+
+        // UI.button(label) -> bool  (returns true on click)
+        add_ui("button", [](lua_State* L) -> int {
+            const char* label = lua_tostring(L, 1);
+            lua_pushboolean(L, ImGui::Button(label ? label : "") ? 1 : 0);
+            return 1;
+        });
+
+        // UI.set_pos(x, y)  — call before begin_panel to position it
+        add_ui("set_pos", [](lua_State* L) -> int {
+            float x = (float)luaL_optnumber(L, 1, 10.0);
+            float y = (float)luaL_optnumber(L, 2, 10.0);
+            ImGui::SetNextWindowPos(ImVec2(x, y), ImGuiCond_Always);
+            return 0;
+        });
+
+        // UI.set_size(w, h)
+        add_ui("set_size", [](lua_State* L) -> int {
+            float w = (float)luaL_optnumber(L, 1, 200.0);
+            float h = (float)luaL_optnumber(L, 2, 100.0);
+            ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_Always);
+            return 0;
+        });
+
+        // UI.same_line()
+        add_ui("same_line", [](lua_State* L) -> int {
+            ImGui::SameLine();
+            return 0;
+        });
+
+        // UI.separator()
+        add_ui("separator", [](lua_State* L) -> int {
+            ImGui::Separator();
+            return 0;
+        });
+
+        // UI.dummy(w, h)  — invisible spacer
+        add_ui("dummy", [](lua_State* L) -> int {
+            float w = (float)luaL_optnumber(L, 1, 0.0);
+            float h = (float)luaL_optnumber(L, 2, 4.0);
+            ImGui::Dummy(ImVec2(w, h));
+            return 0;
+        });
+
+        // UI.set_font_scale(scale)
+        add_ui("set_font_scale", [](lua_State* L) -> int {
+            ImGui::SetWindowFontScale((float)luaL_optnumber(L, 1, 1.0));
+            return 0;
+        });
+
+        // UI.progress_bar(fraction [, label])
+        add_ui("progress_bar", [](lua_State* L) -> int {
+            float frac  = (float)luaL_optnumber(L, 1, 0.0);
+            const char* lbl = lua_isnoneornil(L, 2) ? nullptr : lua_tostring(L, 2);
+            ImGui::ProgressBar(frac, ImVec2(-FLT_MIN, 0.0f), lbl);
+            return 0;
+        });
+
+        // UI.input_text(label) → string: draw a text input field, returns current value
+        add_ui("input_text", [](lua_State* L) -> int {
+            const char* label = luaL_checkstring(L, 1);
+            ImGui::InputText(label, s_ui_input_buf, sizeof(s_ui_input_buf));
+            lua_pushstring(L, s_ui_input_buf);
+            return 1;
+        });
+
+        // UI.input_text_set(value): reset the shared input buffer
+        add_ui("input_text_set", [](lua_State* L) -> int {
+            const char* val = luaL_optstring(L, 1, "");
+            strncpy(s_ui_input_buf, val, sizeof(s_ui_input_buf) - 1);
+            s_ui_input_buf[sizeof(s_ui_input_buf) - 1] = '\0';
+            return 0;
+        });
+
+        lua_setglobal(&L, "UI");
+    }
+
+    // --- Json global — parse JSON strings into Lua tables ---
+    {
+        lua_newtable(&L);
+        lua_pushcfunction(&L, [](lua_State* L) -> int {
+            const char* s = luaL_checkstring(L, 1);
+            try {
+                push_json(L, nlohmann::json::parse(s));
+            } catch (...) {
+                lua_pushnil(L);
+            }
+            return 1;
+        });
+        lua_setfield(&L, -2, "parse");
+        lua_setglobal(&L, "Json");
+    }
+
     // -------------------------------------------------------------------------
     // Lua convenience namespaces — thin wrappers around engine: functions so
     // scripts can use Scene.create_node(), Physics.raycast(), etc.
@@ -836,6 +1385,9 @@ end
 function Scene.get_node(name)
     return engine:find_node(name)
 end
+function Scene.get_mesh_node(name)
+    return engine:find_mesh_node(name)
+end
 function Scene.get_root()
     return engine:get_root_node()
 end
@@ -850,6 +1402,9 @@ function Scene.load(name)
 end
 function Scene.find_by_tag(tag)
     return engine:find_by_tag(tag)
+end
+function Scene.get_world_environment()
+    return engine:get_world_environment()
 end
 
 -- Physics namespace
@@ -894,6 +1449,32 @@ ScriptEngine::~ScriptEngine() { shutdown(); }
 
 void ScriptEngine::update_timers(float dt) {
     if (!m_lua) return;
+
+    // Dispatch completed async HTTP callbacks
+    std::vector<PendingHttpCallback> ready;
+    {
+        std::lock_guard<std::mutex> lk(m_http_mutex);
+        ready.swap(m_http_pending);
+    }
+    for (auto& cb : ready) {
+        lua_rawgeti(m_lua, LUA_REGISTRYINDEX, cb.callback_ref);
+        luaL_unref(m_lua, LUA_REGISTRYINDEX, cb.callback_ref);
+        lua_newtable(m_lua);
+        lua_pushboolean(m_lua, cb.ok ? 1 : 0);
+        lua_setfield(m_lua, -2, "ok");
+        lua_pushinteger(m_lua, cb.status);
+        lua_setfield(m_lua, -2, "status");
+        lua_pushlstring(m_lua, cb.body.c_str(), cb.body.size());
+        lua_setfield(m_lua, -2, "body");
+        lua_pushstring(m_lua, cb.error.c_str());
+        lua_setfield(m_lua, -2, "error");
+        if (lua_pcall(m_lua, 1, 0, 0) != LUA_OK) {
+            const char* err = lua_tostring(m_lua, -1);
+            SOL_WARN(std::string("Http async callback error: ") + (err ? err : "?"));
+            lua_pop(m_lua, 1);
+        }
+    }
+
     for (auto& t : m_timers) {
         if (t.dead) continue;
         t.remaining -= dt;
@@ -994,6 +1575,7 @@ void ScriptEngine::shutdown() {
         m_lua = nullptr;
     }
 
+    g_script_engine_for_http = nullptr;
     m_engine = nullptr;
 }
 
@@ -1379,6 +1961,11 @@ try_components:
         }
         lua_settop(m_lua, stack_top);
     }
+}
+
+void ScriptEngine::push_http_result(bool ok, int status, std::string body, std::string error, int callback_ref) {
+    std::lock_guard<std::mutex> lk(m_http_mutex);
+    m_http_pending.push_back({ok, status, std::move(body), std::move(error), callback_ref});
 }
 
 } // namespace sol

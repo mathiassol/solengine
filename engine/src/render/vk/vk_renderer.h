@@ -82,11 +82,12 @@ private:
     void rebuild_forward_();
     VkSampleCountFlagBits get_sample_count_() const;
     void record_bloom_passes_(VkCommandBuffer cmd, const vk::VulkanImage& hdr_src);
-    void record_tonemap_pass_(VkCommandBuffer cmd, uint32_t image_idx, const vk::VulkanImage& hdr_src, const vk::VulkanImage& ssr_src);
+    void record_tonemap_pass_(VkCommandBuffer cmd, uint32_t image_idx, const vk::VulkanImage& hdr_src, const vk::VulkanImage& ssr_src, const vk::VulkanImage& fog_src);
     void record_taa_pass_(VkCommandBuffer cmd, VkDescriptorSet frame_set, uint32_t taa_read, uint32_t taa_write);
     void record_imgui_pass_(VkCommandBuffer cmd, uint32_t image_idx);
     void record_ssao_passes_(VkCommandBuffer cmd, VkDescriptorSet frame_set);
     void record_ssr_passes_(VkCommandBuffer cmd, VkDescriptorSet frame_set);
+    void record_volumetric_passes_(VkCommandBuffer cmd, VkDescriptorSet frame_set);
 
     Window* m_window = nullptr;
     vk::VkContext m_ctx;
@@ -126,6 +127,22 @@ private:
     vk::VulkanImage  m_ssao;
     vk::VulkanImage  m_ssao_blur;
     vk::VulkanImage  m_ssao_noise;
+
+    // Froxel volumetric fog
+    static constexpr uint32_t VOL_SLICES = 64;
+    vk::VulkanImage  m_vbuffer_density;    // RGBA16F 3D: (scattering.rgb, extinction) — sampled in resolve for per-pixel march
+    vk::VulkanImage  m_vbuffer_lighting;   // RGBA16F 3D: (inscatter.rgb, transmittance) — ambient + point only
+    vk::VulkanImage  m_vol_fog[2];        // RGBA16F 2D full-res resolve output (ping-pong)
+    VkRenderPass     m_vol_fog_pass       = VK_NULL_HANDLE;
+    VkFramebuffer    m_vol_fog_fbs[2]     = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    uint32_t         m_vol_fog_idx        = 0;    // current write target index
+    uint32_t         m_vol_frame_num      = 0;    // increments each frame, drives Halton jitter
+    VkPipelineLayout m_vol_density_layout = VK_NULL_HANDLE;
+    VkPipeline       m_vol_density_pipe   = VK_NULL_HANDLE;
+    VkPipelineLayout m_vol_scatter_layout = VK_NULL_HANDLE;
+    VkPipeline       m_vol_scatter_pipe   = VK_NULL_HANDLE;
+    VkPipelineLayout m_vol_resolve_layout = VK_NULL_HANDLE;
+    VkPipeline       m_vol_resolve_pipe   = VK_NULL_HANDLE;
 
     uint32_t        m_color_taa_idx       = 0;   // incremented each frame for TAA color ping-pong + jitter
     AaMode          m_current_aa_mode     = AaMode::TAA; // tracks current built pipeline AA mode

@@ -140,4 +140,19 @@ VkPipelineLayout build_pipeline_layout(VkDevice device, const LayoutDesc& d) {
     return layout;
 }
 
+VkPipeline build_compute_pipeline(VkDevice device, const ComputePipelineDesc& d) {
+    auto mod = create_shader_module(device, d.comp_code, d.comp_size);
+    VkComputePipelineCreateInfo ci{};
+    ci.sType        = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    ci.stage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    ci.stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
+    ci.stage.module = mod;
+    ci.stage.pName  = "main";
+    ci.layout       = d.layout;
+    VkPipeline pipe;
+    VK_CHECK(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &ci, nullptr, &pipe));
+    vkDestroyShaderModule(device, mod, nullptr);
+    return pipe;
+}
+
 } // namespace sol::vk

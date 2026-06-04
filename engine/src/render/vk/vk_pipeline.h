@@ -42,6 +42,14 @@ struct PipelineDesc {
 
 VkPipeline build_pipeline(VkDevice device, const PipelineDesc& desc);
 
+// Build a VkPipeline for a compute shader
+struct ComputePipelineDesc {
+    const uint32_t* comp_code = nullptr;
+    uint32_t        comp_size = 0;
+    VkPipelineLayout layout   = VK_NULL_HANDLE;
+};
+VkPipeline build_compute_pipeline(VkDevice device, const ComputePipelineDesc& desc);
+
 // Simple pipeline layout builder
 struct LayoutDesc {
     std::vector<VkDescriptorSetLayout> set_layouts;

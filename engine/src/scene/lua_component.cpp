@@ -7,11 +7,13 @@ namespace sol {
 LuaComponent::LuaComponent(std::string path) : m_script_path(std::move(path)) {}
 
 void LuaComponent::on_ready(Engine& engine) {
+    if (engine.is_editor_mode()) return;
     if (engine.has_script())
         engine.script().component_ready(this, engine);
 }
 
 void LuaComponent::on_update(Engine& engine, float dt) {
+    if (engine.is_editor_mode()) return;
     if (engine.has_script())
         engine.script().component_update(this, engine, dt);
 }

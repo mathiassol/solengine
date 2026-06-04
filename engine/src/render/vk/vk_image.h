@@ -39,6 +39,12 @@ VulkanImage create_attachment(VkContext& ctx, uint32_t w, uint32_t h,
                               bool create_sampler = false,
                               VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT);
 
+// 3D volume image for froxel grids (storage + sampled).
+// Does NOT perform an initial layout transition — caller must do UNDEFINED → GENERAL.
+VulkanImage create_volume(VkContext& ctx, uint32_t w, uint32_t h, uint32_t depth_slices,
+                           VkFormat format, VkImageUsageFlags usage,
+                           bool create_sampler = false);
+
 // Transition image layout (one-shot cmd)
 void transition_image_layout(VkCommandBuffer cmd, VkImage image,
                               VkImageAspectFlags aspect,

@@ -52,6 +52,9 @@ using AlphaMode = sol::AlphaMode;
 #include "shaders/ssr.frag.glsl.h"
 #include "shaders/ssr_temporal.frag.glsl.h"
 #include "shaders/equirect_to_cube.frag.glsl.h"
+#include "shaders/vol_density.comp.glsl.h"
+#include "shaders/vol_scatter.comp.glsl.h"
+#include "shaders/vol_resolve.frag.glsl.h"
 
 namespace sol {
 namespace {
@@ -81,13 +84,16 @@ struct alignas(16) PbrPush {
 static_assert(sizeof(PbrPush) == 128);
 
 struct alignas(16) SkyPush {
-    glm::vec4 sun_dir {0.0f, 1.0f, 0.0f, 0.0f};
-    glm::vec4 zenith {0.08f, 0.15f, 0.4f, 0.0f};
-    glm::vec4 horizon {0.5f, 0.6f, 0.7f, 0.0f};
-    glm::vec4 sun_color {3.0f, 2.5f, 2.0f, 0.9997f};
-    glm::ivec4 flags {0};  // flags.x = 1 → sample HDR cubemap
+    glm::vec4  sun_dir   {0.0f, 1.0f, 0.0f, 20.0f};
+    glm::vec4  atmo      {2.5f, 1.0f, 1.0f, 1.0f};
+    glm::vec4  sun_disk  {0.9997f, 50.0f, 0.003f, 2.5f};
+    glm::vec4  night     {1.0f, 0.001f, 0.002f, 0.008f};
+    glm::ivec4 flags     {0};
+    glm::vec4  sky_tint  {1.0f, 1.0f, 1.0f, 0.0f};
+    glm::vec4  sun_tint  {1.0f, 1.0f, 1.0f, 0.0f};
+    glm::vec4  ground    {0.03f, 0.025f, 0.02f, 0.0f};  // xyz=ground_color, w=elapsed_time
 };
-static_assert(sizeof(SkyPush) == 80);
+static_assert(sizeof(SkyPush) == 128);
 
 struct alignas(16) Vec4Push {
     glm::vec4 value {0.0f};
@@ -101,13 +107,16 @@ static_assert(sizeof(SSAOPush) == 32);
 
 struct alignas(16) IBLSkyPush {
     glm::vec4 sun_dir;
-    glm::vec4 zenith;
-    glm::vec4 horizon;
-    glm::vec4 sun_color;
+    glm::vec4 atmo;
+    glm::vec4 sun_disk;
+    glm::vec4 night;
     int32_t   face;
-    float     pad0, pad1, pad2;
+    int32_t   pad0, pad1, pad2;
+    glm::vec4 sky_tint;
+    glm::vec4 sun_tint;
+    glm::vec4 ground;   // xyz=ground_color, w=unused
 };
-static_assert(sizeof(IBLSkyPush) == 80);
+static_assert(sizeof(IBLSkyPush) == 128);
 
 struct alignas(4) IBLCubePush {
     int32_t face;
@@ -127,6 +136,29 @@ struct alignas(16) TaaPush {
     glm::vec4 resolution; // x=width, y=height, z=1/width, w=1/height
 };
 static_assert(sizeof(TaaPush) == 32);
+
+struct alignas(4) VolDensityPush {
+    glm::vec4 grid_params;   // x=vol_near, y=vol_far, z=slices(64), w=0
+    glm::vec4 fog;           // x=extinction, y=scatter_albedo, z=g, w=enabled(1=on)
+    glm::vec4 fog_color;     // rgb=albedo, a=0
+    glm::vec4 height_fog;    // x=base_height, y=inv_falloff, z=extinction, w=scatter_albedo
+    glm::vec4 height_color;  // rgb=color, a=enabled(1=on)
+    glm::vec4 noise_params;  // x=scale, y=time_offset, z=strength, w=enabled(1/0)
+    glm::vec4 noise_params2; // x=octaves, y=lacunarity, z=gain, w=0
+};
+static_assert(sizeof(VolDensityPush) == 112);
+
+struct alignas(4) VolScatterPush {
+    glm::vec4 grid_params;   // x=vol_near, y=vol_far, z=slices, w=0
+    glm::vec4 light_params;  // x=sun_intensity, y=shadow_strength, z=g, w=0
+};
+static_assert(sizeof(VolScatterPush) == 32);
+
+struct alignas(4) VolResolvePush {
+    glm::vec4 params;   // x=vol_near, y=vol_far, z=slices, w=temporal_blend
+    glm::vec4 params2;  // x=g (phase asymmetry), yzw=unused
+};
+static_assert(sizeof(VolResolvePush) == 32);
 
 inline void store_mat4(float dst[16], const glm::mat4& m) {
     std::memcpy(dst, glm::value_ptr(m), sizeof(float) * 16);
@@ -541,6 +573,18 @@ void VulkanRenderer::end_frame() {
             m_ssr_temporal_idx = 0;
         }
 
+        // Volumetric fog: run after forward+ (reads scene depth), before TAA/bloom
+        const vk::VulkanImage* vol_fog_src = &m_fallback_black;
+        if (m_settings.vol_enabled && (m_settings.fog_enabled || m_settings.height_fog_enabled)) {
+            record_volumetric_passes_(frame.cmd, frame_set);
+            vol_fog_src = &m_vol_fog[m_vol_fog_idx];
+            m_vol_fog_idx ^= 1;   // flip after recording so tonemap reads current output
+            ++m_vol_frame_num;
+        } else {
+            m_vol_fog_idx = 0;
+            m_vol_frame_num = 0;
+        }
+
         // TAA: only when aa_mode == TAA
         const vk::VulkanImage* post_hdr = &m_hdr_color;
         if (m_settings.aa_mode == AaMode::TAA) {
@@ -554,7 +598,7 @@ void VulkanRenderer::end_frame() {
         }
 
         record_bloom_passes_(frame.cmd, *post_hdr);
-        record_tonemap_pass_(frame.cmd, image_idx, *post_hdr, *ssr_src);
+        record_tonemap_pass_(frame.cmd, image_idx, *post_hdr, *ssr_src, *vol_fog_src);
         record_imgui_pass_(frame.cmd, image_idx);
 
         VK_CHECK(vkEndCommandBuffer(frame.cmd));
@@ -1077,6 +1121,16 @@ bool VulkanRenderer::create_render_passes_() {
     VkAttachmentReference ssr_ref{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
     m_ssr_pass = make_render_pass(m_ctx.device(), {ssr_att}, {ssr_ref}, nullptr);
 
+    // --- Volumetric fog pass: half-res RGBA16F (inscatter.rgb + transmittance.a) ---
+    const VkAttachmentDescription vol_att{
+        0, HDR_FORMAT, VK_SAMPLE_COUNT_1_BIT,
+        VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_STORE,
+        VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+    };
+    VkAttachmentReference vol_ref{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    m_vol_fog_pass = make_render_pass(m_ctx.device(), {vol_att}, {vol_ref}, nullptr);
+
     return true;
 }
 
@@ -1091,6 +1145,7 @@ void VulkanRenderer::destroy_render_passes_() {
     destroy(m_tonemap_pass);
     destroy(m_bloom_pass);
     destroy(m_ssr_pass);
+    destroy(m_vol_fog_pass);
     destroy(m_depth_pre_pass);
     destroy(m_shadow_pass);
     destroy(m_vsm_pass);
@@ -1276,6 +1331,28 @@ bool VulkanRenderer::create_swapchain_targets_() {
         VK_IMAGE_ASPECT_COLOR_BIT,
         true);
 
+    // Volumetric fog: full-resolution RGBA16F ping-pong (inscatter.rgb + transmittance.a)
+    for (int i = 0; i < 2; ++i) {
+        m_vol_fog[i] = vk::create_attachment(
+            m_ctx, extent.width, extent.height,
+            HDR_FORMAT,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            true);  // bilinear sampler for temporal reprojection and composite in tonemap
+    }
+
+    // Froxel vbuffers: 3D RGBA16F, lifetime layout = GENERAL
+    const uint32_t froxel_w = std::max(1u, (extent.width  + 7) / 8);
+    const uint32_t froxel_h = std::max(1u, (extent.height + 7) / 8);
+    m_vbuffer_density = vk::create_volume(
+        m_ctx, froxel_w, froxel_h, VOL_SLICES, HDR_FORMAT,
+        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        true);   // sampler needed for per-pixel march in resolve
+    m_vbuffer_lighting = vk::create_volume(
+        m_ctx, froxel_w, froxel_h, VOL_SLICES, HDR_FORMAT,
+        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        true);   // linear+clamp sampler for resolve sample
+
     // SSAO textures (full-resolution R8_UNORM)
     m_ssao = vk::create_attachment(
         m_ctx, extent.width, extent.height,
@@ -1314,14 +1391,19 @@ bool VulkanRenderer::create_swapchain_targets_() {
 
     // Transition images to their expected resting layouts
     auto cmd = m_ctx.begin_single_cmd();
-    // hdr_color, gbuf1, gbuf_roughness, bloom, SSAO, TAA colors, SSR targets → SHADER_READ_ONLY
-    for (auto* img : {&m_hdr_color, &m_gbuf1, &m_gbuf_roughness, &m_bloom_a, &m_bloom_b, &m_ssao, &m_ssao_blur, &m_taa_color[0], &m_taa_color[1], &m_ssr_raw, &m_ssr_history[0], &m_ssr_history[1]}) {
+    // hdr_color, gbuf1, gbuf_roughness, bloom, SSAO, TAA colors, SSR targets, vol_fog → SHADER_READ_ONLY
+    for (auto* img : {&m_hdr_color, &m_gbuf1, &m_gbuf_roughness, &m_bloom_a, &m_bloom_b, &m_ssao, &m_ssao_blur, &m_taa_color[0], &m_taa_color[1], &m_ssr_raw, &m_ssr_history[0], &m_ssr_history[1], &m_vol_fog[0], &m_vol_fog[1]}) {
         vk::transition_image_layout(cmd, img->image, VK_IMAGE_ASPECT_COLOR_BIT,
             VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
     // hdr_depth → DEPTH_STENCIL_READ_ONLY (resting state; depth_pre_pass transitions internally)
     vk::transition_image_layout(cmd, m_hdr_depth.image, VK_IMAGE_ASPECT_DEPTH_BIT,
         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+    // froxel vbuffers → GENERAL (persist for lifetime of swapchain)
+    vk::transition_image_layout(cmd, m_vbuffer_density.image,     VK_IMAGE_ASPECT_COLOR_BIT,
+        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+    vk::transition_image_layout(cmd, m_vbuffer_lighting.image,    VK_IMAGE_ASPECT_COLOR_BIT,
+        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
     m_ctx.end_single_cmd(cmd);
 
     for (uint32_t i = 0; i < 4; ++i) {
@@ -1352,6 +1434,10 @@ bool VulkanRenderer::create_swapchain_targets_() {
 
     m_bloom_a_fb = make_framebuffer(m_ctx.device(), m_bloom_pass, {m_bloom_a.view}, bloom_w, bloom_h);
     m_bloom_b_fb = make_framebuffer(m_ctx.device(), m_bloom_pass, {m_bloom_b.view}, bloom_w, bloom_h);
+    for (int i = 0; i < 2; ++i) {
+        m_vol_fog_fbs[i] = make_framebuffer(m_ctx.device(), m_vol_fog_pass,
+            {m_vol_fog[i].view}, extent.width, extent.height);
+    }
     m_ssao_fb      = make_framebuffer(m_ctx.device(), m_ssao_pass, {m_ssao.view},      extent.width, extent.height);
     m_ssao_blur_fb = make_framebuffer(m_ctx.device(), m_ssao_pass, {m_ssao_blur.view}, extent.width, extent.height);
     for (int i = 0; i < 2; ++i) {
@@ -1383,6 +1469,9 @@ void VulkanRenderer::destroy_swapchain_targets_() {
 
     if (m_bloom_b_fb)  { vkDestroyFramebuffer(m_ctx.device(), m_bloom_b_fb,  nullptr); m_bloom_b_fb  = VK_NULL_HANDLE; }
     if (m_bloom_a_fb)  { vkDestroyFramebuffer(m_ctx.device(), m_bloom_a_fb,  nullptr); m_bloom_a_fb  = VK_NULL_HANDLE; }
+    for (int i = 0; i < 2; ++i) {
+        if (m_vol_fog_fbs[i]) { vkDestroyFramebuffer(m_ctx.device(), m_vol_fog_fbs[i], nullptr); m_vol_fog_fbs[i] = VK_NULL_HANDLE; }
+    }
     if (m_ssao_blur_fb) { vkDestroyFramebuffer(m_ctx.device(), m_ssao_blur_fb, nullptr); m_ssao_blur_fb = VK_NULL_HANDLE; }
     if (m_ssao_fb)      { vkDestroyFramebuffer(m_ctx.device(), m_ssao_fb,      nullptr); m_ssao_fb      = VK_NULL_HANDLE; }
     if (m_fwd_plus_fb) { vkDestroyFramebuffer(m_ctx.device(), m_fwd_plus_fb, nullptr); m_fwd_plus_fb = VK_NULL_HANDLE; }
@@ -1410,6 +1499,9 @@ void VulkanRenderer::destroy_swapchain_targets_() {
 
     m_bloom_b.destroy(m_ctx.device(), m_ctx.allocator());
     m_bloom_a.destroy(m_ctx.device(), m_ctx.allocator());
+    for (int i = 0; i < 2; ++i) m_vol_fog[i].destroy(m_ctx.device(), m_ctx.allocator());
+    m_vbuffer_density.destroy(m_ctx.device(), m_ctx.allocator());
+    m_vbuffer_lighting.destroy(m_ctx.device(), m_ctx.allocator());
     m_ssao_blur.destroy(m_ctx.device(), m_ctx.allocator());
     m_ssao.destroy(m_ctx.device(), m_ctx.allocator());
     m_msaa_color.destroy(m_ctx.device(), m_ctx.allocator());
@@ -1729,6 +1821,55 @@ bool VulkanRenderer::create_pipelines_() {
         m_ssr_temporal_pipe = vk::build_pipeline(m_ctx.device(), desc);
     }
 
+    // --- Froxel volumetric pipelines ---
+    // Pass 1: density compute  — {frame_layout, vol_density_layout} + VolDensityPush
+    {
+        vk::LayoutDesc layout{};
+        layout.set_layouts = {m_desc.frame_layout(), m_desc.vol_density_layout()};
+        layout.push_ranges = {{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(VolDensityPush)}};
+        m_vol_density_layout = vk::build_pipeline_layout(m_ctx.device(), layout);
+
+        vk::ComputePipelineDesc cpd{};
+        cpd.comp_code = vol_density_comp_glsl;
+        cpd.comp_size = sizeof(vol_density_comp_glsl);
+        cpd.layout    = m_vol_density_layout;
+        m_vol_density_pipe = vk::build_compute_pipeline(m_ctx.device(), cpd);
+    }
+
+    // Pass 2: scatter+integrate compute  — {frame_layout, vol_scatter_layout} + VolScatterPush
+    {
+        vk::LayoutDesc layout{};
+        layout.set_layouts = {m_desc.frame_layout(), m_desc.vol_scatter_layout()};
+        layout.push_ranges = {{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(VolScatterPush)}};
+        m_vol_scatter_layout = vk::build_pipeline_layout(m_ctx.device(), layout);
+
+        vk::ComputePipelineDesc cpd{};
+        cpd.comp_code = vol_scatter_comp_glsl;
+        cpd.comp_size = sizeof(vol_scatter_comp_glsl);
+        cpd.layout    = m_vol_scatter_layout;
+        m_vol_scatter_pipe = vk::build_compute_pipeline(m_ctx.device(), cpd);
+    }
+
+    // Pass 3: resolve fragment  — {frame_layout, vol_resolve_layout} + VolResolvePush
+    {
+        vk::LayoutDesc layout{};
+        layout.set_layouts = {m_desc.frame_layout(), m_desc.vol_resolve_layout()};
+        layout.push_ranges = {{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(VolResolvePush)}};
+        m_vol_resolve_layout = vk::build_pipeline_layout(m_ctx.device(), layout);
+
+        vk::PipelineDesc pdesc{};
+        pdesc.vert_code   = fullscreen_vert_glsl;
+        pdesc.vert_size   = sizeof(fullscreen_vert_glsl);
+        pdesc.frag_code   = vol_resolve_frag_glsl;
+        pdesc.frag_size   = sizeof(vol_resolve_frag_glsl);
+        pdesc.layout      = m_vol_resolve_layout;
+        pdesc.render_pass = m_vol_fog_pass;
+        pdesc.depth_test  = false;
+        pdesc.depth_write = false;
+        pdesc.cull_mode   = VK_CULL_MODE_NONE;
+        m_vol_resolve_pipe = vk::build_pipeline(m_ctx.device(), pdesc);
+    }
+
     return true;
 }
 
@@ -1753,6 +1894,9 @@ void VulkanRenderer::destroy_pipelines_() {
     destroy_pipe(m_ssao_pipe);
     destroy_pipe(m_ssr_temporal_pipe);
     destroy_pipe(m_ssr_ray_pipe);
+    destroy_pipe(m_vol_density_pipe);
+    destroy_pipe(m_vol_scatter_pipe);
+    destroy_pipe(m_vol_resolve_pipe);
     destroy_pipe(m_taa_pipe);
     destroy_pipe(m_fwd_blend_pipe_double);
     destroy_pipe(m_fwd_blend_pipe);
@@ -1773,6 +1917,9 @@ void VulkanRenderer::destroy_pipelines_() {
     destroy_layout(m_ssao_layout);
     destroy_layout(m_ssr_temporal_layout);
     destroy_layout(m_ssr_ray_layout);
+    destroy_layout(m_vol_density_layout);
+    destroy_layout(m_vol_scatter_layout);
+    destroy_layout(m_vol_resolve_layout);
     destroy_layout(m_taa_layout);
     destroy_layout(m_sky_fwd_layout);
     destroy_layout(m_fwd_plus_obj_layout);
@@ -2182,17 +2329,14 @@ void VulkanRenderer::record_fwd_plus_pass_(VkCommandBuffer cmd, VkDescriptorSet 
                                 1, 1, &sky_cube_set, 0, nullptr);
 
         SkyPush sky{};
-        sky.flags = glm::ivec4(use_hdr ? 1 : 0, 0, 0, 0);
-        if (m_has_sky) {
-            sky.sun_dir   = glm::vec4(glm::normalize(m_sky_sun_dir), 0.0f);
-            sky.zenith    = glm::vec4(m_sky_zenith, 0.0f);
-            sky.horizon   = glm::vec4(m_sky_horizon, 0.0f);
-            sky.sun_color = glm::vec4(m_sky_sun_color, m_sky_sun_cos_r);
-        } else {
-            sky.zenith    = glm::vec4(clear_rgb.r, clear_rgb.g, clear_rgb.b, 0.0f);
-            sky.horizon   = glm::vec4(clear_rgb.r, clear_rgb.g, clear_rgb.b, 0.0f);
-            sky.sun_color = glm::vec4(0.0f, 0.0f, 0.0f, 2.0f);
-        }
+        sky.flags    = glm::ivec4(use_hdr ? 1 : 0, 0, 0, 0);
+        sky.sun_dir  = glm::vec4(glm::normalize(m_sky_sun_dir), m_sky_sun_intensity);
+        sky.atmo     = glm::vec4(m_sky_turbidity, m_sky_rayleigh_scale, m_sky_mie_strength, m_sky_sky_exposure);
+        sky.sun_disk = glm::vec4(m_sky_sun_cos_r, m_sky_sun_bloom, m_sky_star_density, m_sky_star_brightness);
+        sky.night    = glm::vec4(m_sky_night_brightness, m_sky_night_color.r, m_sky_night_color.g, m_sky_night_color.b);
+        sky.sky_tint = glm::vec4(m_sky_tint, 0.0f);
+        sky.sun_tint = glm::vec4(m_sky_sun_tint, 0.0f);
+        sky.ground   = glm::vec4(m_sky_ground_color, m_sky_time);
         vkCmdPushConstants(cmd, m_sky_fwd_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(sky), &sky);
         vkCmdDraw(cmd, 3, 1, 0, 0);
     }
@@ -2353,6 +2497,162 @@ void VulkanRenderer::record_ssr_passes_(VkCommandBuffer cmd, VkDescriptorSet fra
         Vec4Push push{};
         push.value = {(m_ssr_temporal_idx == 0) ? 1.0f : m_settings.ssr_temporal_blend, 0.0f, 0.0f, 0.0f};
         vkCmdPushConstants(cmd, m_ssr_temporal_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
+        vkCmdDraw(cmd, 3, 1, 0, 0);
+        vkCmdEndRenderPass(cmd);
+    }
+}
+
+void VulkanRenderer::record_volumetric_passes_(VkCommandBuffer cmd, VkDescriptorSet frame_set) {
+    const auto   extent   = m_swapchain.extent();
+    const float  vol_near = m_settings.vol_near;
+    const float  vol_far  = m_settings.vol_far;
+    const float  slices   = float(VOL_SLICES);
+    const uint32_t froxel_w = std::max(1u, (extent.width  + 7) / 8);
+    const uint32_t froxel_h = std::max(1u, (extent.height + 7) / 8);
+
+    // ---- Pass 1: density voxelization (compute) ----
+    {
+        VkDescriptorSet density_set = m_desc.alloc_vol_density_set(m_ctx.device(), m_vbuffer_density.view);
+        std::array<VkDescriptorSet, 2> sets = {frame_set, density_set};
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_vol_density_pipe);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_vol_density_layout,
+            0, (uint32_t)sets.size(), sets.data(), 0, nullptr);
+
+        VolDensityPush pc{};
+        pc.grid_params  = {vol_near, vol_far, slices, 0.0f};
+        pc.fog          = {m_settings.fog_density, m_settings.fog_scattering, m_settings.fog_g,
+                           m_settings.fog_enabled ? 1.0f : 0.0f};
+        pc.fog_color    = {m_settings.fog_albedo.r, m_settings.fog_albedo.g, m_settings.fog_albedo.b, 0.0f};
+        pc.height_fog   = {m_settings.height_fog_base,
+                           m_settings.height_fog_falloff > 0.0f ? 1.0f / m_settings.height_fog_falloff : 0.0f,
+                           m_settings.height_fog_density, m_settings.height_fog_scattering};
+        pc.height_color = {m_settings.height_fog_albedo.r, m_settings.height_fog_albedo.g,
+                           m_settings.height_fog_albedo.b,
+                           m_settings.height_fog_enabled ? 1.0f : 0.0f};
+        pc.noise_params  = {m_settings.fog_noise_scale,
+                            m_settings.fog_noise_enabled ? m_elapsed_time * m_settings.fog_noise_speed : 0.0f,
+                            m_settings.fog_noise_enabled ? m_settings.fog_noise_strength : 0.0f,
+                            m_settings.fog_noise_enabled ? 1.0f : 0.0f};
+        pc.noise_params2 = {float(m_settings.fog_noise_octaves),
+                            m_settings.fog_noise_lacunarity,
+                            m_settings.fog_noise_gain, 0.0f};
+        vkCmdPushConstants(cmd, m_vol_density_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+        vkCmdDispatch(cmd,
+            (froxel_w + 7) / 8,
+            (froxel_h + 7) / 8,
+            1);
+    }
+
+    // Memory barrier: density write → scatter read
+    {
+        VkImageMemoryBarrier bar{};
+        bar.sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        bar.srcAccessMask    = VK_ACCESS_SHADER_WRITE_BIT;
+        bar.dstAccessMask    = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        bar.oldLayout        = VK_IMAGE_LAYOUT_GENERAL;
+        bar.newLayout        = VK_IMAGE_LAYOUT_GENERAL;
+        bar.image            = m_vbuffer_density.image;
+        bar.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &bar);
+    }
+
+    // ---- Pass 2: scatter + front-to-back integration (compute) ----
+    {
+        VkDescriptorSet scatter_set = m_desc.alloc_vol_scatter_set(
+            m_ctx.device(), m_vbuffer_density.view, m_vbuffer_lighting.view);
+        std::array<VkDescriptorSet, 2> sets = {frame_set, scatter_set};
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_vol_scatter_pipe);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_vol_scatter_layout,
+            0, (uint32_t)sets.size(), sets.data(), 0, nullptr);
+
+        VolScatterPush pc{};
+        pc.grid_params  = {vol_near, vol_far, slices, float(m_vol_frame_num)};
+        pc.light_params = {m_settings.vol_sun_intensity,
+                           (m_has_shadow && m_settings.shadows_enabled) ? m_settings.vol_shadow_strength : 0.0f,
+                           m_settings.fog_g, 0.0f};
+        vkCmdPushConstants(cmd, m_vol_scatter_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+        vkCmdDispatch(cmd,
+            (froxel_w + 7) / 8,
+            (froxel_h + 7) / 8,
+            1);
+    }
+
+    // Memory barrier: lighting write → resolve sample
+    {
+        VkImageMemoryBarrier bar{};
+        bar.sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        bar.srcAccessMask    = VK_ACCESS_SHADER_WRITE_BIT;
+        bar.dstAccessMask    = VK_ACCESS_SHADER_READ_BIT;
+        bar.oldLayout        = VK_IMAGE_LAYOUT_GENERAL;
+        bar.newLayout        = VK_IMAGE_LAYOUT_GENERAL;
+        bar.image            = m_vbuffer_lighting.image;
+        bar.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 0, nullptr, 0, nullptr, 1, &bar);
+    }
+
+    // Memory barrier: density written in pass 1, read in pass 2 (compute) and pass 3 (fragment).
+    // Explicit COMPUTE→FRAGMENT barrier needed before the resolve render pass.
+    {
+        VkImageMemoryBarrier bar{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        bar.srcAccessMask    = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        bar.dstAccessMask    = VK_ACCESS_SHADER_READ_BIT;
+        bar.oldLayout        = VK_IMAGE_LAYOUT_GENERAL;
+        bar.newLayout        = VK_IMAGE_LAYOUT_GENERAL;
+        bar.image            = m_vbuffer_density.image;
+        bar.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 0, nullptr, 0, nullptr,
+            1, &bar);
+    }
+
+    // ---- Pass 3: resolve to 2D full-res (fragment) ----
+    {
+        const uint32_t w = extent.width;
+        const uint32_t h = extent.height;
+
+        uint32_t hist_idx = 1 - m_vol_fog_idx;  // the buffer NOT being written = history
+        VkDescriptorSet resolve_set = m_desc.alloc_vol_resolve_set(
+            m_ctx.device(),
+            m_hdr_depth.view,           m_hdr_depth_sampler,
+            m_vbuffer_lighting.view,    m_vbuffer_lighting.sampler,
+            m_vol_fog[hist_idx].view,   m_vol_fog[hist_idx].sampler,
+            m_vbuffer_density.view,     m_vbuffer_density.sampler);
+        std::array<VkDescriptorSet, 2> sets = {frame_set, resolve_set};
+
+        vk::transition_image_layout(cmd, m_vol_fog[m_vol_fog_idx].image, VK_IMAGE_ASPECT_COLOR_BIT,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+        VkClearValue clear{};
+        clear.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+
+        VkRenderPassBeginInfo rp{};
+        rp.sType             = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        rp.renderPass        = m_vol_fog_pass;
+        rp.framebuffer       = m_vol_fog_fbs[m_vol_fog_idx];
+        rp.renderArea.extent = {w, h};
+        rp.clearValueCount   = 1;
+        rp.pClearValues      = &clear;
+
+        vkCmdBeginRenderPass(cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
+        VkViewport vol_vp = make_viewport(float(w), float(h));
+        VkRect2D   vol_sc = make_scissor(w, h);
+        vkCmdSetViewport(cmd, 0, 1, &vol_vp);
+        vkCmdSetScissor(cmd, 0, 1, &vol_sc);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_vol_resolve_pipe);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_vol_resolve_layout,
+            0, (uint32_t)sets.size(), sets.data(), 0, nullptr);
+
+        VolResolvePush pc{};
+        bool first_frame = (m_prev_view_proj == glm::mat4(0.0f));
+        float temporal_blend = first_frame ? 0.0f : 0.45f;
+        pc.params  = {vol_near, vol_far, slices, temporal_blend};
+        pc.params2 = {m_settings.fog_g, 0.0f, 0.0f, 0.0f};
+        vkCmdPushConstants(cmd, m_vol_resolve_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
         vkCmdDraw(cmd, 3, 1, 0, 0);
         vkCmdEndRenderPass(cmd);
     }
@@ -2633,7 +2933,7 @@ void VulkanRenderer::record_bloom_passes_(VkCommandBuffer cmd, const vk::VulkanI
     run_pass(m_bloom_a_fb, m_bloom_b, m_blur_pipe, m_blur_layout, {0.0f, 1.0f / float(h), 0.0f, 0.0f});
 }
 
-void VulkanRenderer::record_tonemap_pass_(VkCommandBuffer cmd, uint32_t image_idx, const vk::VulkanImage& hdr_src, const vk::VulkanImage& ssr_src) {
+void VulkanRenderer::record_tonemap_pass_(VkCommandBuffer cmd, uint32_t image_idx, const vk::VulkanImage& hdr_src, const vk::VulkanImage& ssr_src, const vk::VulkanImage& fog_src) {
     VkClearValue clear{};
     clear.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
 
@@ -2649,7 +2949,8 @@ void VulkanRenderer::record_tonemap_pass_(VkCommandBuffer cmd, uint32_t image_id
         m_ctx.device(),
         hdr_src.view, hdr_src.sampler,
         m_bloom_a.view, m_bloom_a.sampler,
-        ssr_src.view, ssr_src.sampler);
+        ssr_src.view, ssr_src.sampler,
+        fog_src.view, fog_src.sampler);
 
     vkCmdBeginRenderPass(cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
     VkViewport vp = make_viewport(float(m_swapchain.extent().width), float(m_swapchain.extent().height));
@@ -2972,11 +3273,14 @@ void VulkanRenderer::rebuild_ibl_() {
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ibl_sky_pipe);
 
             IBLSkyPush push{};
-            push.sun_dir   = glm::vec4(m_sky_sun_dir, 0.0f);
-            push.zenith    = glm::vec4(m_sky_zenith, 0.0f);
-            push.horizon   = glm::vec4(m_sky_horizon, 0.0f);
-            push.sun_color = glm::vec4(m_sky_sun_color, m_sky_sun_cos_r);
-            push.face      = f;
+            push.sun_dir  = glm::vec4(m_sky_sun_dir, m_sky_sun_intensity);
+            push.atmo     = glm::vec4(m_sky_turbidity, m_sky_rayleigh_scale, m_sky_mie_strength, m_sky_sky_exposure);
+            push.sun_disk = glm::vec4(m_sky_sun_cos_r, m_sky_sun_bloom, m_sky_star_density, m_sky_star_brightness);
+            push.night    = glm::vec4(m_sky_night_brightness, m_sky_night_color.r, m_sky_night_color.g, m_sky_night_color.b);
+            push.face     = f;
+            push.sky_tint = glm::vec4(m_sky_tint, 0.0f);
+            push.sun_tint = glm::vec4(m_sky_sun_tint, 0.0f);
+            push.ground   = glm::vec4(m_sky_ground_color, 0.0f);
             vkCmdPushConstants(cmd, m_ibl_sky_layout, VK_SHADER_STAGE_FRAGMENT_BIT,
                 0, sizeof(push), &push);
             vkCmdDraw(cmd, 3, 1, 0, 0);

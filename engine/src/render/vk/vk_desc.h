@@ -67,11 +67,12 @@ public:
                                        VkImageView mr,     VkSampler mr_samp,
                                        VkImageView emissive, VkSampler emissive_samp);
 
-    // Allocate + write set for fullscreen post (HDR + bloom + SSR)
+    // Allocate + write set for fullscreen post (HDR + bloom + SSR + vol_fog)
     VkDescriptorSet alloc_post_set(VkDevice device,
-                                   VkImageView hdr,   VkSampler hdr_samp,
-                                   VkImageView bloom, VkSampler bloom_samp,
-                                   VkImageView ssr,   VkSampler ssr_samp);
+                                   VkImageView hdr,     VkSampler hdr_samp,
+                                   VkImageView bloom,   VkSampler bloom_samp,
+                                   VkImageView ssr,     VkSampler ssr_samp,
+                                   VkImageView fog,     VkSampler fog_samp);
 
     // Allocate + write set for a single-sampler pass (bloom bright extract, blur)
     VkDescriptorSet alloc_single_sampler_set(VkDevice device,
@@ -94,6 +95,11 @@ public:
 
     // TAA input layout (hdr current, history, depth)
     VkDescriptorSetLayout taa_input_layout() const { return m_taa_input_layout; }
+
+    // Volumetric compute layouts
+    VkDescriptorSetLayout vol_density_layout() const { return m_vol_density_layout; }  // write density image3D
+    VkDescriptorSetLayout vol_scatter_layout() const { return m_vol_scatter_layout; }  // density read + lighting write
+    VkDescriptorSetLayout vol_resolve_layout() const { return m_vol_resolve_layout; }  // depth + lighting3D read
 
     // Allocate + write SSAO input set (normals + depth + noise)
     VkDescriptorSet alloc_ssao_input_set(VkDevice device,
@@ -118,6 +124,16 @@ public:
                                            VkImageView history, VkSampler s_history,
                                            VkImageView depth,   VkSampler s_depth);
 
+    // Volumetric compute descriptor set allocators
+    VkDescriptorSet alloc_vol_density_set(VkDevice device, VkImageView density_view);
+    VkDescriptorSet alloc_vol_scatter_set(VkDevice device, VkImageView density_view,
+                                          VkImageView lighting_view);
+    VkDescriptorSet alloc_vol_resolve_set(VkDevice device,
+                                          VkImageView depth_view,        VkSampler depth_samp,
+                                          VkImageView lighting_view,     VkSampler lighting_samp,
+                                          VkImageView history_view,      VkSampler history_samp,
+                                          VkImageView density_view,      VkSampler density_samp);
+
     void reset_pool(VkDevice device, uint32_t frame_idx); // free all transient sets for the given frame slot
 
 private:
@@ -130,6 +146,10 @@ private:
     VkDescriptorSetLayout m_taa_input_layout  = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_ssr_ray_input_layout      = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_ssr_temporal_input_layout = VK_NULL_HANDLE;
+    // Volumetric compute descriptor set layouts
+    VkDescriptorSetLayout m_vol_density_layout        = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_vol_scatter_layout        = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_vol_resolve_layout        = VK_NULL_HANDLE;
     std::array<VkDescriptorPool, 2> m_pools   = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     uint32_t              m_active_pool_idx   = 0u;
 };

@@ -1,4 +1,5 @@
 #pragma once
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -70,6 +71,43 @@ public:
         m_has_sky       = true;
     }
 
+    // Set full procedural atmospheric sky parameters.
+    // sun_dir = normalised direction toward the sun.
+    void set_sky_atmo(const glm::vec3& sun_dir,
+                      float turbidity        = 2.5f,
+                      float sun_intensity    = 20.0f,
+                      float rayleigh_scale   = 1.0f,
+                      float mie_strength     = 1.0f,
+                      float sun_bloom        = 50.0f,
+                      float night_brightness = 1.0f,
+                      float sky_exposure     = 1.0f,
+                      float sun_disk_deg     = 0.53f,
+                      const glm::vec3& sky_tint       = {1.0f, 1.0f, 1.0f},
+                      const glm::vec3& sun_color_tint = {1.0f, 1.0f, 1.0f},
+                      const glm::vec3& night_color    = {0.001f, 0.002f, 0.008f},
+                      float star_density     = 0.003f,
+                      float star_brightness  = 2.5f,
+                      const glm::vec3& ground_color   = {0.03f, 0.025f, 0.02f},
+                      float time             = 0.0f) {
+        m_sky_sun_dir          = glm::normalize(sun_dir);
+        m_sky_turbidity        = turbidity;
+        m_sky_sun_intensity    = sun_intensity;
+        m_sky_rayleigh_scale   = rayleigh_scale;
+        m_sky_mie_strength     = mie_strength;
+        m_sky_sun_bloom        = sun_bloom;
+        m_sky_night_brightness = night_brightness;
+        m_sky_sky_exposure     = sky_exposure;
+        m_sky_sun_cos_r        = std::cos(glm::radians(sun_disk_deg));
+        m_sky_tint             = sky_tint;
+        m_sky_sun_tint         = sun_color_tint;
+        m_sky_night_color      = night_color;
+        m_sky_star_density     = star_density;
+        m_sky_star_brightness  = star_brightness;
+        m_sky_ground_color     = ground_color;
+        m_sky_time             = time;
+        m_has_sky              = true;
+    }
+
     // Set the HDR environment map for sky background and IBL source.
     // path is relative to the working directory. Empty string disables HDR sky.
     virtual void set_hdr_sky(const std::string& /*path*/) {}
@@ -104,6 +142,22 @@ protected:
     glm::vec3 m_sky_sun_color {3.0f, 2.5f, 2.0f};
     float     m_sky_sun_cos_r = 0.9997f;
     bool      m_has_sky       = false;
+
+    // Atmospheric sky parameters (procedural sky)
+    float m_sky_sun_intensity    = 20.0f;
+    float m_sky_turbidity        = 2.5f;
+    float m_sky_rayleigh_scale   = 1.0f;
+    float m_sky_mie_strength     = 1.0f;
+    float m_sky_sun_bloom        = 50.0f;
+    float m_sky_night_brightness = 1.0f;
+    float m_sky_sky_exposure     = 1.0f;
+    glm::vec3 m_sky_tint         {1.0f, 1.0f, 1.0f};
+    glm::vec3 m_sky_sun_tint     {1.0f, 1.0f, 1.0f};
+    glm::vec3 m_sky_night_color  {0.001f, 0.002f, 0.008f};
+    float m_sky_star_density     = 0.003f;
+    float m_sky_star_brightness  = 2.5f;
+    glm::vec3 m_sky_ground_color {0.03f, 0.025f, 0.02f};
+    float m_sky_time             = 0.0f;
 };
 
 } // namespace sol

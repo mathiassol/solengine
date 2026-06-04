@@ -116,11 +116,24 @@ SOL_REFLECT_BEGIN(WorldEnvironment)
     SOL_SECTION("Sky")
     SOL_FIELD_ENUM(sky_mode,     "Procedural", "HDR Panorama")
     SOL_FIELD(hdr_path,          sol::FieldType::AssetPath)
-    SOL_FIELD(zenith_color,      sol::FieldType::Color3)
-    SOL_FIELD(horizon_color,     sol::FieldType::Color3)
-    SOL_FIELD(sun_color,         sol::FieldType::Color3)
-    SOL_FIELD(sun_disk_size,     sol::FieldType::Float)
-    SOL_FIELD(follow_sun,        sol::FieldType::Bool)
+    SOL_FIELD(time_of_day,       sol::FieldType::Float)
+    SOL_FIELD(auto_sun,          sol::FieldType::Bool)
+    SOL_FIELD(latitude,          sol::FieldType::Float)
+    SOL_FIELD(turbidity,         sol::FieldType::Float)
+    SOL_FIELD(sun_intensity,     sol::FieldType::Float)
+    SOL_FIELD(rayleigh_scale,    sol::FieldType::Float)
+    SOL_FIELD(mie_strength,      sol::FieldType::Float)
+    SOL_FIELD(sun_bloom_mult,    sol::FieldType::Float)
+    SOL_FIELD(night_brightness,  sol::FieldType::Float)
+    SOL_FIELD(sky_exposure,      sol::FieldType::Float)
+    SOL_FIELD(sun_disk_size_deg, sol::FieldType::Float)
+    SOL_SECTION("Sky Colors")
+    SOL_FIELD(sky_tint,          sol::FieldType::Color3)
+    SOL_FIELD(sun_color_tint,    sol::FieldType::Color3)
+    SOL_FIELD(night_sky_color,   sol::FieldType::Color3)
+    SOL_FIELD(ground_color,      sol::FieldType::Color3)
+    SOL_FIELD(star_density,      sol::FieldType::Float)
+    SOL_FIELD(star_brightness,   sol::FieldType::Float)
     SOL_SECTION("Ambient")
     SOL_FIELD(ambient_color,     sol::FieldType::Color3)
     SOL_FIELD(ambient_intensity, sol::FieldType::Float)
@@ -150,11 +163,28 @@ SOL_REFLECT_BEGIN(WorldEnvironment)
     SOL_FIELD(ssr_roughness_cutoff, sol::FieldType::Float)
     SOL_FIELD(ssr_intensity,        sol::FieldType::Float)
     SOL_SECTION("Volumetrics")
-    SOL_FIELD(vol_enabled,    sol::FieldType::Bool)
-    SOL_FIELD(vol_density,    sol::FieldType::Float)
-    SOL_FIELD(vol_scattering, sol::FieldType::Float)
-    SOL_FIELD(vol_g,          sol::FieldType::Float)
-    SOL_FIELD(vol_march_steps, sol::FieldType::Int)
+    SOL_FIELD(vol_enabled,          sol::FieldType::Bool)
+    SOL_FIELD(vol_near,             sol::FieldType::Float)
+    SOL_FIELD(vol_far,              sol::FieldType::Float)
+    SOL_FIELD(fog_enabled,          sol::FieldType::Bool)
+    SOL_FIELD(fog_density,          sol::FieldType::Float)
+    SOL_FIELD(fog_scattering,       sol::FieldType::Float)
+    SOL_FIELD(fog_g,                sol::FieldType::Float)
+    SOL_FIELD(height_fog_enabled,   sol::FieldType::Bool)
+    SOL_FIELD(height_fog_density,   sol::FieldType::Float)
+    SOL_FIELD(height_fog_scattering,sol::FieldType::Float)
+    SOL_FIELD(height_fog_base,      sol::FieldType::Float)
+    SOL_FIELD(height_fog_falloff,   sol::FieldType::Float)
+    SOL_FIELD(vol_sun_intensity,    sol::FieldType::Float)
+    SOL_FIELD(vol_shadow_strength,  sol::FieldType::Float)
+    SOL_SECTION("Fog Noise")
+    SOL_FIELD(fog_noise_enabled,    sol::FieldType::Bool)
+    SOL_FIELD(fog_noise_scale,      sol::FieldType::Float)
+    SOL_FIELD(fog_noise_speed,      sol::FieldType::Float)
+    SOL_FIELD(fog_noise_strength,   sol::FieldType::Float)
+    SOL_FIELD(fog_noise_octaves,    sol::FieldType::Int)
+    SOL_FIELD(fog_noise_lacunarity, sol::FieldType::Float)
+    SOL_FIELD(fog_noise_gain,       sol::FieldType::Float)
     SOL_SECTION("Anti-Aliasing")
     SOL_FIELD_ENUM(aa_mode,  "None", "MSAA 2x", "MSAA 4x", "MSAA 8x", "TAA")
     SOL_FIELD(taa_blend,      sol::FieldType::Float)
@@ -613,23 +643,102 @@ void SceneInstance::on_ready(Engine& engine) {
 //  WorldEnvironment
 // ============================================================
 
+// Compute normalised sun direction (toward sun, Y-up) from 24h time and latitude.
+// Uses a fixed solar declination of 23.45° (summer solstice).
+static glm::vec3 compute_sun_dir(float time_24h, float latitude_deg) {
+    float hour_angle = (time_24h - 12.0f) * 15.0f;   // 15°/hour, noon=0°
+    float lat  = glm::radians(latitude_deg);
+    float ha   = glm::radians(hour_angle);
+    float decl = glm::radians(23.45f);                // fixed declination
+
+    float sin_elev = std::sin(lat) * std::sin(decl)
+                   + std::cos(lat) * std::cos(decl) * std::cos(ha);
+    float elev     = std::asin(glm::clamp(sin_elev, -1.0f, 1.0f));
+
+    float az_num = std::cos(decl) * std::sin(ha);
+    float az_den = std::cos(ha) * std::sin(lat) - std::tan(decl) * std::cos(lat);
+    float azimuth = std::atan2(az_num, az_den);
+
+    // Convert to world space (Y-up, -Z = north)
+    return glm::normalize(glm::vec3(
+        -std::sin(azimuth) * std::cos(elev),
+         std::sin(elev),
+        -std::cos(azimuth) * std::cos(elev)
+    ));
+}
+
 void WorldEnvironment::on_render(Engine& engine, const glm::mat4& /*xform*/) {
     auto& r = engine.renderer();
     auto& s = r.settings();
 
     if (sky_mode == 1 && !hdr_path.empty()) {
         r.set_hdr_sky(hdr_path);
+        // Even with HDR sky, drive the DirectionalLight direction from time_of_day
+        if (auto_sun) {
+            glm::vec3 sun_dir = compute_sun_dir(time_of_day, latitude);
+            Node* root = this;
+            while (root->parent()) root = root->parent();
+            if (auto* dl = root->find_first<DirectionalLight>()) {
+                // Set DL rotation so forward() == -sun_dir (light shines from sun toward scene)
+                glm::vec3 fwd = -sun_dir;  // DL shines toward scene
+                float rx = glm::degrees(std::asin(glm::clamp(fwd.y, -1.0f, 1.0f)));
+                float ry = glm::degrees(std::atan2(-fwd.x, -fwd.z));
+                dl->rotation = glm::vec3(rx, ry, 0.0f);
+
+                // Update DL colour from sun elevation — match GLSL od_ray formula exactly
+                float sinS  = sun_dir.y;
+                float am    = 7994.0f / std::max(sinS + 0.04f, 0.04f);
+                float tR    = std::exp(-5.5e-6f  * am);
+                float tG    = std::exp(-13.0e-6f * am);
+                float tB    = std::exp(-22.4e-6f * am);
+                float maxC  = std::max(tG, 0.01f);
+                float day   = glm::clamp(sinS * 5.0f + 0.5f, 0.0f, 1.0f);
+                dl->color   = glm::vec3(tR, tG, tB) / maxC * day * sun_color_tint;
+            }
+        }
     } else {
+        // Procedural atmospheric sky
         glm::vec3 sun_dir{0.0f, 1.0f, 0.0f};
-        if (follow_sun) {
+
+        if (auto_sun) {
+            sun_dir = compute_sun_dir(time_of_day, latitude);
+
+            // Update DirectionalLight direction and colour
+            Node* root = this;
+            while (root->parent()) root = root->parent();
+            if (auto* dl = root->find_first<DirectionalLight>()) {
+                glm::vec3 fwd = -sun_dir;
+                float rx = glm::degrees(std::asin(glm::clamp(fwd.y, -1.0f, 1.0f)));
+                float ry = glm::degrees(std::atan2(-fwd.x, -fwd.z));
+                dl->rotation = glm::vec3(rx, ry, 0.0f);
+
+                // Sun colour derived from Rayleigh transmittance along sun ray
+                // Match GLSL od_ray: H / max(sinS + 0.04, 0.04)
+                float sinS  = sun_dir.y;
+                float am    = 7994.0f / std::max(sinS + 0.04f, 0.04f);
+                float tR    = std::exp(-5.5e-6f  * rayleigh_scale * am);
+                float tG    = std::exp(-13.0e-6f * rayleigh_scale * am);
+                float tB    = std::exp(-22.4e-6f * rayleigh_scale * am);
+                float maxC  = std::max(tG, 0.01f);
+                float day   = glm::clamp(sinS * 5.0f + 0.5f, 0.0f, 1.0f);
+                dl->color   = glm::vec3(tR, tG, tB) / maxC * day * sun_color_tint;
+            }
+        } else {
+            // auto_sun off: read sun direction from the DirectionalLight in the scene
             Node* root = this;
             while (root->parent()) root = root->parent();
             if (auto* dl = root->find_first<DirectionalLight>())
                 sun_dir = glm::normalize(-dl->world_direction());
         }
-        float cos_r = std::cos(glm::radians(sun_disk_size));
-        r.set_sky(sun_dir, zenith_color, horizon_color, sun_color, cos_r);
+
+        r.set_sky_atmo(sun_dir, turbidity, sun_intensity, rayleigh_scale,
+                       mie_strength, sun_bloom_mult, night_brightness,
+                       sky_exposure, sun_disk_size_deg,
+                       sky_tint, sun_color_tint, night_sky_color,
+                       star_density, star_brightness,
+                       ground_color, engine.elapsed_time());
     }
+
     s.ibl_enabled        = ibl_enabled;
     s.ibl_intensity      = ibl_intensity;
     s.ibl_diffuse_scale  = ibl_diffuse_scale;
@@ -652,11 +761,29 @@ void WorldEnvironment::on_render(Engine& engine, const glm::mat4& /*xform*/) {
     s.ssr_max_distance     = ssr_max_distance;
     s.ssr_roughness_cutoff = ssr_roughness_cutoff;
     s.ssr_intensity        = ssr_intensity;
-    s.vol_enabled    = vol_enabled;
-    s.vol_density    = vol_density;
-    s.vol_scattering = vol_scattering;
-    s.vol_g          = vol_g;
-    s.vol_march_steps = vol_march_steps;
+    s.vol_enabled           = vol_enabled;
+    s.vol_near              = vol_near;
+    s.vol_far               = vol_far;
+    s.fog_enabled           = fog_enabled;
+    s.fog_density           = fog_density;
+    s.fog_scattering        = fog_scattering;
+    s.fog_albedo            = fog_albedo;
+    s.fog_g                 = fog_g;
+    s.height_fog_enabled    = height_fog_enabled;
+    s.height_fog_density    = height_fog_density;
+    s.height_fog_scattering = height_fog_scattering;
+    s.height_fog_base       = height_fog_base;
+    s.height_fog_falloff    = height_fog_falloff;
+    s.height_fog_albedo     = height_fog_albedo;
+    s.vol_sun_intensity     = vol_sun_intensity;
+    s.vol_shadow_strength   = vol_shadow_strength;
+    s.fog_noise_enabled     = fog_noise_enabled;
+    s.fog_noise_scale       = fog_noise_scale;
+    s.fog_noise_speed       = fog_noise_speed;
+    s.fog_noise_strength    = fog_noise_strength;
+    s.fog_noise_octaves     = fog_noise_octaves;
+    s.fog_noise_lacunarity  = fog_noise_lacunarity;
+    s.fog_noise_gain        = fog_noise_gain;
     s.aa_mode       = static_cast<AaMode>(aa_mode);
     s.taa_blend     = taa_blend;
     s.taa_sharpening = taa_sharpening;
@@ -811,14 +938,9 @@ static std::unique_ptr<Node> node_from_json(const json& j, int depth) {
     } else if (type == "WorldEnvironment") {
         auto* n = dynamic_cast<WorldEnvironment*>(node.get());
         if (!n) return node;
-        if (j.contains("zenith_color"))  n->zenith_color  = vec3_from_json(j["zenith_color"],  {0.08f, 0.15f, 0.40f});
-        if (j.contains("horizon_color")) n->horizon_color = vec3_from_json(j["horizon_color"], {0.50f, 0.60f, 0.70f});
-        if (j.contains("sun_color"))     n->sun_color     = vec3_from_json(j["sun_color"],     {3.0f,  2.5f,  2.0f});
         if (j.contains("ambient_color")) n->ambient_color = vec3_from_json(j["ambient_color"], {0.30f, 0.30f, 0.35f});
         n->sky_mode          = j.value("sky_mode",          0);
         n->hdr_path          = j.value("hdr_path",          "");
-        n->sun_disk_size     = j.value("sun_disk_size",     1.8f);
-        n->follow_sun        = j.value("follow_sun",        true);
         n->ambient_intensity = j.value("ambient_intensity", 1.0f);
         n->tonemap_mode      = j.value("tonemap_mode",      3);
         n->exposure          = j.value("exposure",          1.0f);
@@ -840,14 +962,49 @@ static std::unique_ptr<Node> node_from_json(const json& j, int depth) {
         n->ibl_intensity     = j.value("ibl_intensity",     1.0f);
         n->ibl_diffuse_scale  = j.value("ibl_diffuse_scale",  1.0f);
         n->ibl_specular_scale = j.value("ibl_specular_scale", 1.0f);
-        n->vol_enabled    = j.value("vol_enabled",    false);
-        n->vol_density    = j.value("vol_density",    0.05f);
-        n->vol_scattering = j.value("vol_scattering", 0.3f);
-        n->vol_g          = j.value("vol_g",          0.0f);
-        n->vol_march_steps = j.value("vol_march_steps", 32);
+        n->vol_enabled           = j.value("vol_enabled",           false);
+        n->vol_near              = j.value("vol_near",              0.5f);
+        n->vol_far               = j.value("vol_far",               64.0f);
+        n->fog_enabled           = j.value("fog_enabled",           false);
+        n->fog_density           = j.value("fog_density",           0.05f);
+        n->fog_scattering        = j.value("fog_scattering",        0.6f);
+        if (j.contains("fog_albedo"))        n->fog_albedo        = vec3_from_json(j["fog_albedo"],        {1.0f, 1.0f, 1.0f});
+        n->fog_g                 = j.value("fog_g",                 0.3f);
+        n->height_fog_enabled    = j.value("height_fog_enabled",    false);
+        n->height_fog_density    = j.value("height_fog_density",    0.1f);
+        n->height_fog_scattering = j.value("height_fog_scattering", 0.6f);
+        n->height_fog_base       = j.value("height_fog_base",       0.0f);
+        n->height_fog_falloff    = j.value("height_fog_falloff",    10.0f);
+        if (j.contains("height_fog_albedo")) n->height_fog_albedo = vec3_from_json(j["height_fog_albedo"], {0.8f, 0.87f, 1.0f});
+        n->vol_sun_intensity     = j.value("vol_sun_intensity",     1.0f);
+        n->vol_shadow_strength   = j.value("vol_shadow_strength",   1.0f);
+        n->fog_noise_enabled     = j.value("fog_noise_enabled",     false);
+        n->fog_noise_scale       = j.value("fog_noise_scale",       0.05f);
+        n->fog_noise_speed       = j.value("fog_noise_speed",       0.02f);
+        n->fog_noise_strength    = j.value("fog_noise_strength",    0.8f);
+        n->fog_noise_octaves     = j.value("fog_noise_octaves",     4);
+        n->fog_noise_lacunarity  = j.value("fog_noise_lacunarity",  2.0f);
+        n->fog_noise_gain        = j.value("fog_noise_gain",        0.5f);
         n->aa_mode        = j.value("aa_mode",        4);
         n->taa_blend      = j.value("taa_blend",      0.1f);
         n->taa_sharpening = j.value("taa_sharpening", 0.2f);
+        n->time_of_day      = j.value("time_of_day",      14.5f);
+        n->auto_sun         = j.value("auto_sun",         true);
+        n->latitude         = j.value("latitude",         45.0f);
+        n->turbidity        = j.value("turbidity",        2.5f);
+        n->sun_intensity    = j.value("sun_intensity",    20.0f);
+        n->rayleigh_scale   = j.value("rayleigh_scale",   1.0f);
+        n->mie_strength     = j.value("mie_strength",     1.0f);
+        n->sun_bloom_mult   = j.value("sun_bloom_mult",   50.0f);
+        n->night_brightness = j.value("night_brightness", 1.0f);
+        n->sky_exposure     = j.value("sky_exposure",     1.0f);
+        n->sun_disk_size_deg = j.value("sun_disk_size_deg", 0.53f);
+        if (j.contains("sky_tint"))       n->sky_tint       = vec3_from_json(j["sky_tint"],       {1.0f, 1.0f, 1.0f});
+        if (j.contains("sun_color_tint")) n->sun_color_tint = vec3_from_json(j["sun_color_tint"], {1.0f, 1.0f, 1.0f});
+        if (j.contains("night_sky_color"))n->night_sky_color= vec3_from_json(j["night_sky_color"],{0.001f, 0.002f, 0.008f});
+        if (j.contains("ground_color"))   n->ground_color   = vec3_from_json(j["ground_color"],   {0.03f, 0.025f, 0.02f});
+        n->star_density    = j.value("star_density",    0.003f);
+        n->star_brightness = j.value("star_brightness", 2.5f);
     } else if (type == "AudioStreamPlayer") {
         auto* n = dynamic_cast<AudioStreamPlayer*>(node.get());
         if (!n) return node;
@@ -1017,11 +1174,6 @@ static json node_to_json(const Node* node) {
     } else if (const auto* we = dynamic_cast<const WorldEnvironment*>(node)) {
         j["sky_mode"]          = we->sky_mode;
         j["hdr_path"]          = we->hdr_path;
-        j["zenith_color"]      = vec3_to_json(we->zenith_color);
-        j["horizon_color"]     = vec3_to_json(we->horizon_color);
-        j["sun_color"]         = vec3_to_json(we->sun_color);
-        j["sun_disk_size"]     = we->sun_disk_size;
-        j["follow_sun"]        = we->follow_sun;
         j["ambient_color"]     = vec3_to_json(we->ambient_color);
         j["ambient_intensity"] = we->ambient_intensity;
         j["tonemap_mode"]      = we->tonemap_mode;
@@ -1044,14 +1196,49 @@ static json node_to_json(const Node* node) {
         j["ibl_intensity"]     = we->ibl_intensity;
         j["ibl_diffuse_scale"]  = we->ibl_diffuse_scale;
         j["ibl_specular_scale"] = we->ibl_specular_scale;
-        j["vol_enabled"]    = we->vol_enabled;
-        j["vol_density"]    = we->vol_density;
-        j["vol_scattering"] = we->vol_scattering;
-        j["vol_g"]          = we->vol_g;
-        j["vol_march_steps"] = we->vol_march_steps;
+        j["vol_enabled"]           = we->vol_enabled;
+        j["vol_near"]              = we->vol_near;
+        j["vol_far"]               = we->vol_far;
+        j["fog_enabled"]           = we->fog_enabled;
+        j["fog_density"]           = we->fog_density;
+        j["fog_scattering"]        = we->fog_scattering;
+        j["fog_albedo"]            = vec3_to_json(we->fog_albedo);
+        j["fog_g"]                 = we->fog_g;
+        j["height_fog_enabled"]    = we->height_fog_enabled;
+        j["height_fog_density"]    = we->height_fog_density;
+        j["height_fog_scattering"] = we->height_fog_scattering;
+        j["height_fog_base"]       = we->height_fog_base;
+        j["height_fog_falloff"]    = we->height_fog_falloff;
+        j["height_fog_albedo"]     = vec3_to_json(we->height_fog_albedo);
+        j["vol_sun_intensity"]     = we->vol_sun_intensity;
+        j["vol_shadow_strength"]   = we->vol_shadow_strength;
+        j["fog_noise_enabled"]     = we->fog_noise_enabled;
+        j["fog_noise_scale"]       = we->fog_noise_scale;
+        j["fog_noise_speed"]       = we->fog_noise_speed;
+        j["fog_noise_strength"]    = we->fog_noise_strength;
+        j["fog_noise_octaves"]     = we->fog_noise_octaves;
+        j["fog_noise_lacunarity"]  = we->fog_noise_lacunarity;
+        j["fog_noise_gain"]        = we->fog_noise_gain;
         j["aa_mode"]        = we->aa_mode;
         j["taa_blend"]      = we->taa_blend;
         j["taa_sharpening"] = we->taa_sharpening;
+        j["time_of_day"]       = we->time_of_day;
+        j["auto_sun"]          = we->auto_sun;
+        j["latitude"]          = we->latitude;
+        j["turbidity"]         = we->turbidity;
+        j["sun_intensity"]     = we->sun_intensity;
+        j["rayleigh_scale"]    = we->rayleigh_scale;
+        j["mie_strength"]      = we->mie_strength;
+        j["sun_bloom_mult"]    = we->sun_bloom_mult;
+        j["night_brightness"]  = we->night_brightness;
+        j["sky_exposure"]      = we->sky_exposure;
+        j["sun_disk_size_deg"] = we->sun_disk_size_deg;
+        j["sky_tint"]          = vec3_to_json(we->sky_tint);
+        j["sun_color_tint"]    = vec3_to_json(we->sun_color_tint);
+        j["night_sky_color"]   = vec3_to_json(we->night_sky_color);
+        j["ground_color"]      = vec3_to_json(we->ground_color);
+        j["star_density"]      = we->star_density;
+        j["star_brightness"]   = we->star_brightness;
     } else if (const auto* n = dynamic_cast<const AudioStreamPlayer*>(node)) {
         if (!n->clip_path.empty()) j["clip_path"] = n->clip_path;
         j["volume"]   = n->volume;
@@ -1100,7 +1287,7 @@ void Scene::ready_node(Engine& engine, Node* node) {
     // Dispatch component on_ready in attachment order.
     for (auto& comp : node->components())
         comp->on_ready(engine);
-    if (!node->script_path.empty() && engine.has_script())
+    if (!node->script_path.empty() && engine.has_script() && !engine.is_editor_mode())
         engine.script().node_ready(node, engine);
     // Use index-based loop: on_ready may add children (SceneInstance).
     for (size_t i = 0; i < node->children().size(); ++i)
@@ -1125,7 +1312,7 @@ void Scene::update_node_phase(Engine& engine, Node* node, float dt, bool pre_phy
         for (auto& comp : node->components())
             if (is_pre_phase(comp->tick_group()) == pre_physics)
                 comp->on_update(engine, dt);
-        if (!node->script_path.empty() && engine.has_script())
+        if (!node->script_path.empty() && engine.has_script() && !engine.is_editor_mode())
             engine.script().node_update(node, engine, dt);
     }
     for (size_t i = 0; i < node->children().size(); ++i)

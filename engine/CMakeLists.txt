@@ -107,6 +107,7 @@ target_link_libraries(engine_core
 # Platform-specific Vulkan surface extension
 if(WIN32)
     target_compile_definitions(engine_core PRIVATE VK_USE_PLATFORM_WIN32_KHR)
+    target_link_libraries(engine_core PRIVATE winhttp)
 elseif(APPLE)
     target_compile_definitions(engine_core PRIVATE VK_USE_PLATFORM_METAL_EXT)
 elseif(UNIX)
@@ -207,6 +208,9 @@ sol_compile_shader(frag ${SOL_SHADER_SRC}/equirect_to_cube.frag.glsl SOL_H_equir
 sol_compile_shader(frag ${SOL_SHADER_SRC}/taa.frag.glsl              SOL_H_taa_frag)
 sol_compile_shader(frag ${SOL_SHADER_SRC}/ssr.frag.glsl          SOL_H_ssr_frag)
 sol_compile_shader(frag ${SOL_SHADER_SRC}/ssr_temporal.frag.glsl SOL_H_ssr_temporal_frag)
+sol_compile_shader(comp ${SOL_SHADER_SRC}/vol_density.comp.glsl  SOL_H_vol_density_comp)
+sol_compile_shader(comp ${SOL_SHADER_SRC}/vol_scatter.comp.glsl  SOL_H_vol_scatter_comp)
+sol_compile_shader(frag ${SOL_SHADER_SRC}/vol_resolve.frag.glsl  SOL_H_vol_resolve_frag)
 sol_compile_shader(vert ${SOL_SHADER_SRC}/depth_pre.vert.glsl       SOL_H_depth_pre_vert)
 sol_compile_shader(frag ${SOL_SHADER_SRC}/depth_pre.frag.glsl       SOL_H_depth_pre_frag)
 sol_compile_shader(vert ${SOL_SHADER_SRC}/forward_plus.vert.glsl    SOL_H_fwd_plus_vert)
@@ -223,5 +227,6 @@ target_sources(engine_core PRIVATE
     ${SOL_H_ibl_pref}  ${SOL_H_ibl_brdf}  ${SOL_H_equirect}
     ${SOL_H_taa_frag}
     ${SOL_H_ssr_frag}        ${SOL_H_ssr_temporal_frag}
+    ${SOL_H_vol_density_comp} ${SOL_H_vol_scatter_comp} ${SOL_H_vol_resolve_frag}
     ${SOL_H_depth_pre_vert} ${SOL_H_depth_pre_frag}
     ${SOL_H_fwd_plus_vert}  ${SOL_H_fwd_plus_frag})

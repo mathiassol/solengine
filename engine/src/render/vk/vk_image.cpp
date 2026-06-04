@@ -86,6 +86,12 @@ void transition_image_layout(VkCommandBuffer cmd, VkImage image,
         barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
         src_stage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
         dst_stage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    } else {
+        // Generic transition — compute read/write, UNDEFINED→GENERAL, etc.
+        barrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+        src_stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+        dst_stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
     }
 
     vkCmdPipelineBarrier(cmd, src_stage, dst_stage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
@@ -313,6 +319,63 @@ VulkanImage create_attachment(VkContext& ctx, uint32_t w, uint32_t h,
     }
     ctx.end_single_cmd(cmd);
 
+    return img;
+}
+
+// ---------------------------------------------------------------------------
+VulkanImage create_volume(VkContext& ctx, uint32_t w, uint32_t h, uint32_t depth_slices,
+                           VkFormat format, VkImageUsageFlags usage, bool create_sampler)
+{
+    VulkanImage img;
+    img.format     = format;
+    img.width      = w;
+    img.height     = h;
+    img.mip_levels = 1;
+
+    VkImageCreateInfo ici{};
+    ici.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ici.imageType     = VK_IMAGE_TYPE_3D;
+    ici.extent        = { w, h, depth_slices };
+    ici.mipLevels     = 1;
+    ici.arrayLayers   = 1;
+    ici.format        = format;
+    ici.tiling        = VK_IMAGE_TILING_OPTIMAL;
+    ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    ici.usage         = usage;
+    ici.samples       = VK_SAMPLE_COUNT_1_BIT;
+    ici.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+
+    VmaAllocationCreateInfo ai{};
+    ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+    VK_CHECK(vmaCreateImage(ctx.allocator(), &ici, &ai, &img.image, &img.alloc, nullptr));
+
+    VkImageViewCreateInfo vci{};
+    vci.sType                           = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vci.image                           = img.image;
+    vci.viewType                        = VK_IMAGE_VIEW_TYPE_3D;
+    vci.format                          = format;
+    vci.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+    vci.subresourceRange.baseMipLevel   = 0;
+    vci.subresourceRange.levelCount     = 1;
+    vci.subresourceRange.baseArrayLayer = 0;
+    vci.subresourceRange.layerCount     = 1;
+    VK_CHECK(vkCreateImageView(ctx.device(), &vci, nullptr, &img.view));
+
+    if (create_sampler) {
+        VkSamplerCreateInfo si{};
+        si.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        si.magFilter    = VK_FILTER_LINEAR;
+        si.minFilter    = VK_FILTER_LINEAR;
+        si.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.minLod       = 0.0f;
+        si.maxLod       = 0.25f;
+        VK_CHECK(vkCreateSampler(ctx.device(), &si, nullptr, &img.sampler));
+    }
+
+    // No layout transition here — caller transitions UNDEFINED → GENERAL via begin_single_cmd
     return img;
 }
 
