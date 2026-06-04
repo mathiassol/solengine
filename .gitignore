@@ -34,7 +34,7 @@ demo/
 *.pptx
 *.ppt
 ACLib/
-Docs/
+Docs/.obsidian/
 aqtinstall.log
 *.log
 review.md
