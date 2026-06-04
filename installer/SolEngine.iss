@@ -1,8 +1,8 @@
-; SolEngine Beta 0.1 – Inno Setup installer script
+; SolEngine Beta 0.2 – Inno Setup installer script
 ; Run from repo root:  C:\InnoSetup6\ISCC.exe installer\SolEngine.iss
 
 #define AppName      "SolEngine"
-#define AppVersion   "0.1.0-beta"
+#define AppVersion   "0.2.0-beta"
 #define AppPublisher "mathiassol"
 #define AppURL       "https://solengine.pages.dev"
 #define AppExeName   "sol_editor.exe"
@@ -23,7 +23,7 @@ MinVersion=10.0
 ArchitecturesInstallIn64BitMode=x64compatible
 ArchitecturesAllowed=x64compatible
 OutputDir=..\out
-OutputBaseFilename=SolEngine-0.1.0-beta-win64-Setup
+OutputBaseFilename=SolEngine-0.2.0-beta-win64-Setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
