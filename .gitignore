@@ -37,7 +37,6 @@ ACLib/
 Docs/.obsidian/
 aqtinstall.log
 *.log
-review.md
 
 # Utility bat files not needed for source build
 runDemo.bat
